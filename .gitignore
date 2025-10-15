@@ -1,0 +1,24 @@
+# Project docs (ignore all)
+docs/**
+
+# .NET
+bin/
+obj/
+*.user
+*.suo
+*.swp
+
+# Node/Extension
+node_modules/
+dist/
+.npmrc
+*.log
+
+# Env & tooling
+.env
+.env.*
+.vscode/
+.idea/
+
+# Docker/K8s artifacts
+**/.cache/
