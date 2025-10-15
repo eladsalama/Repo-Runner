@@ -16,5 +16,5 @@ Showcase the ability to run arbitrary projects safely, not just my own, and to r
 - **LLM/RAG**: **Ollama** locally (e.g., Llama 3.x 8B) + small open-source embeddings
 
 ## Status
-Work in progress (MVP target): one-click “Run Locally” for a single-container HTTP app, basic logs, and “Ask the Repo” over README + Dockerfile with citations. Everything runs **free** on a laptop.
+Work in progress (MVP target): one-click “Run Locally” for a single-container HTTP app, basic logs, and “Ask the Repo” over README + Dockerfile with citations.
 
