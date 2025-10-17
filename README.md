@@ -15,6 +15,7 @@ Showcase the ability to run arbitrary projects safely, not just my own, and to r
 - **LLM/RAG**: **Ollama** locally (e.g., Llama 3.x 8B) + small open-source embeddings
 
 ## Status
+<<<<<<< HEAD
 🚧 **Work in progress** (MVP target): one-click "Run Locally" for a single-container HTTP app, basic logs, and "Ask the Repo" over README + Dockerfile with citations. Everything runs **free** on a laptop.
 
 ### Current Progress
@@ -73,4 +74,7 @@ cd Repo-Runner/infra
 - **[Plan.md](docs/Plan.md)**: Full vision & architecture
 - **[infra/README.md](infra/README.md)**: Infrastructure details
 - **[infra/PREREQUISITES.md](infra/PREREQUISITES.md)**: Tool installation
+=======
+Work in progress (MVP target): one-click “Run Locally” for a single-container HTTP app, basic logs, and “Ask the Repo” over README + Dockerfile with citations.
+>>>>>>> b4155d1ad63c4a0eb6b856bffc94af70fa41e853
 
