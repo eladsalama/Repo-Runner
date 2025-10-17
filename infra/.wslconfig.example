@@ -1,0 +1,43 @@
+# WSL2 Configuration for RepoRunner
+# This file limits WSL2 memory usage to prevent VmmemWSL from consuming too much RAM
+# Place this file at: C:\Users\<YourUsername>\.wslconfig
+
+[wsl2]
+# Limit memory to 4GB (adjust based on your total RAM)
+memory=4GB
+
+# Limit CPUs to 2 cores
+processors=2
+
+# Limit swap file size
+swap=2GB
+
+# How much memory to reserve for the Windows host
+# This ensures Windows itself has breathing room
+# memoryReclamation=gradual  # Uncomment on Windows 11
+
+# Additional settings
+localhostForwarding=true
+
+# IMPORTANT NOTES:
+# 1. After creating/editing this file, you MUST restart WSL2:
+#    Open PowerShell as Administrator and run:
+#      wsl --shutdown
+#      (wait 10 seconds)
+#      docker desktop will restart automatically
+#
+# 2. Adjust memory based on your total RAM:
+#    - 8GB total RAM:  memory=3GB
+#    - 16GB total RAM: memory=4GB or 6GB
+#    - 32GB total RAM: memory=8GB
+#
+# 3. After changing this file, always run: wsl --shutdown
+#    Then restart Docker Desktop
+#
+# 4. To check current WSL2 memory usage:
+#    Open Task Manager → Details → Look for "vmmem" or "VmmemWSL"
+
+# TROUBLESHOOTING:
+# - If pods fail to start: increase memory to 6GB
+# - If Windows feels slow: decrease memory to 3GB
+# - Our lean infrastructure needs ~2.5GB for pods + ~1GB Docker overhead = 3.5GB minimum
