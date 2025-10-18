@@ -1,4 +1,4 @@
-# RepoRunner Infrastructure Bootstrap Script
+# bootstrap.ps1
 # Usage: .\bootstrap.ps1 [apply|destroy|status|reset|verify]
 
 param(
@@ -7,344 +7,226 @@ param(
   [string]$Action = 'apply'
 )
 
+# -------------------------
+# Self-relaunch once with safer flags
+# -------------------------
+if (-not $env:RR_PS_Relaunched) {
+  $env:RR_PS_Relaunched = "1"
+  $self = if ($PSCommandPath) { $PSCommandPath } else { $MyInvocation.MyCommand.Path }
+  $passArgs = @()
+  if ($MyInvocation.UnboundArguments) { $passArgs += $MyInvocation.UnboundArguments }
+  if ($args.Count -gt 0 -and -not $passArgs) { $passArgs += $args }
+  $ps = "$env:SystemRoot\System32\WindowsPowerShell\v1.0\powershell.exe"
+  if (-not (Test-Path $ps)) { $ps = "powershell.exe" }
+  $psArgs = @('-NoProfile','-ExecutionPolicy','Bypass','-File', $self) + $passArgs
+  Start-Process -FilePath $ps -ArgumentList $psArgs -Wait -NoNewWindow
+  exit $LASTEXITCODE
+}
+
 $ErrorActionPreference = 'Stop'
 [Console]::OutputEncoding = [System.Text.Encoding]::UTF8
 
-# Refresh PATH environment variable to pick up newly installed tools
-$env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" + [System.Environment]::GetEnvironmentVariable("Path","User")
+function Info([string]$m){ Write-Host "[*] $m" -ForegroundColor Cyan }
+function Ok  ([string]$m){ Write-Host "[OK] $m" -ForegroundColor Green }
+function Err ([string]$m){ Write-Host "[ERR] $m" -ForegroundColor Red }
 
-# Track if we're in the middle of deployment
-$script:DeploymentInProgress = $false
-$script:CleanupDone = $false
+# Refresh PATH
+$env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" +
+            [System.Environment]::GetEnvironmentVariable("Path","User")
 
-# Trap to handle script termination (Ctrl+C, unexpected errors)
-trap {
-  if ($script:DeploymentInProgress -and -not $script:CleanupDone) {
-    Write-Host "`n`nScript interrupted! Cleaning up..." -ForegroundColor Yellow
-    $script:CleanupDone = $true
-    
-    # Clean up cluster if it exists
-    $clusters = kind get clusters 2>&1 | Out-String
-    if ($clusters -match "reporunner") {
-      Write-Host "Deleting partially deployed cluster..." -ForegroundColor Yellow
-      kind delete cluster --name reporunner 2>&1 | Out-Null
-      Write-Host "Cleanup complete." -ForegroundColor Green
-    }
-  }
-  exit 1
+# Common paths
+$TfDir = Join-Path $PSScriptRoot "terraform"
+$KubeconfigPath = Join-Path $TfDir "kubeconfig"
+
+function Set-KubeEnv {
+  # Always point kubectl at the Terraform-generated kubeconfig
+  $env:KUBECONFIG = $KubeconfigPath
 }
-
-function Write-Step     { param([string]$m) Write-Host ""; Write-Host "==> $m" -ForegroundColor Cyan }
-function Write-Ok       { param([string]$m) Write-Host "[OK] $m" -ForegroundColor Green }
-function Write-Err      { param([string]$m) Write-Host "[ERR] $m" -ForegroundColor Red }
 
 function Check-Prerequisites {
-  Write-Step "Checking prerequisites..."
-
-  $tools = @(
-    @{Name="Docker";    Check="docker version"},
-    @{Name="kubectl";   Check="kubectl version --client"},
-    @{Name="Helm";      Check="helm version"},
-    @{Name="Terraform"; Check="terraform version"},
-    @{Name="kind";      Check="kind version"}
+  Info "Checking prerequisites..."
+  $need = @(
+    @{n="Docker";    c="docker";    args=@("version")},
+    @{n="kubectl";   c="kubectl";   args=@("version","--client")},
+    @{n="Helm";      c="helm";      args=@("version")},
+    @{n="Terraform"; c="terraform"; args=@("version")},
+    @{n="kind";      c="kind";      args=@("version")}
   )
-
-  $all = $true
-  foreach ($t in $tools) {
-    try { $null = Invoke-Expression $t.Check 2>&1; Write-Ok "$($t.Name) is installed" }
-    catch { Write-Err "$($t.Name) is not installed or not in PATH"; $all = $false }
+  $ok = $true
+  foreach ($t in $need) {
+    if (-not (Get-Command $t.c -ErrorAction SilentlyContinue)) {
+      Err "$($t.n) not found in PATH"; $ok = $false; continue
+    }
+    try { & $t.c @($t.args) | Out-Null; Ok "$($t.n) is installed" }
+    catch { Err "$($t.n) check failed: $($_.Exception.Message)"; $ok = $false }
   }
-  if (-not $all) {
-    Write-Host ""; Write-Host "Please install missing tools. See infra/README.md." -ForegroundColor Yellow
-    exit 1
-  }
-
-  try { docker ps | Out-Null; Write-Ok "Docker daemon is running" }
-  catch { Write-Err "Docker daemon is not running. Start Docker Desktop."; exit 1 }
+  try { docker ps | Out-Null; Ok "Docker daemon is running" }
+  catch { Err "Docker daemon is not running"; $ok = $false }
+  if (-not $ok) { throw "Missing prerequisites" }
 }
 
-function Safe-Cleanup {
-  param([string]$reason)
-  
-  $script:CleanupDone = $true
-  $script:DeploymentInProgress = $false
-  
-  Write-Host ""
-  Write-Err "Deployment failed: $reason"
-  Write-Step "Performing safe cleanup..."
-  
-  # Check if cluster exists and destroy it
-  $clusters = kind get clusters 2>&1 | Out-String
-  if ($clusters -match "reporunner") {
-    Write-Host "Cleaning up partially deployed cluster..." -ForegroundColor Yellow
-    
-    Push-Location "$PSScriptRoot\terraform"
-    try {
-      # Try terraform destroy first
-      if (Test-Path "terraform.tfstate") {
-        Write-Host "Running terraform destroy..." -ForegroundColor Yellow
-        terraform destroy -auto-approve 2>&1 | Out-Null
-      }
-    } catch {
-      Write-Host "Terraform destroy failed, forcing kind cluster deletion..." -ForegroundColor Yellow
-    } finally {
-      Pop-Location
+function Safe-Cleanup([string]$reason) {
+  Err "Deployment failed: $reason"
+  Info "Cleaning up..."
+  try {
+    # Use kubeconfig if present for destroy
+    if (Test-Path $KubeconfigPath) { Set-KubeEnv }
+    $clusters = kind get clusters 2>&1 | Out-String
+    if ($clusters -match "reporunner") {
+      try {
+        if (Test-Path $TfDir) {
+          Push-Location $TfDir
+          if (Test-Path "terraform.tfstate") {
+            Info "terraform destroy (best-effort)..."
+            terraform destroy -auto-approve -no-color 2>&1 | Out-Null
+          }
+        }
+      } catch {}
+      finally { if ((Get-Location).Path -ne $PSScriptRoot) { Pop-Location } }
+      Info "Deleting kind cluster..."
+      kind delete cluster --name reporunner 2>&1 | Out-Null
     }
-    
-    # Force delete kind cluster
-    Write-Host "Deleting kind cluster..." -ForegroundColor Yellow
-    kind delete cluster --name reporunner 2>&1 | Out-Null
-  } else {
-    Write-Host "No cluster to clean up." -ForegroundColor DarkGray
-  }
-  
-  # Clean up any orphaned Docker containers
-  Write-Host "Checking for orphaned Docker containers..." -ForegroundColor Yellow
-  $containers = docker ps -aq --filter "name=reporunner" 2>&1 | Out-String
-  if ($containers -and $containers.Trim() -ne "") {
-    Write-Host "Removing Docker containers..." -ForegroundColor Yellow
-    docker rm -f $containers.Trim() 2>&1 | Out-Null
-  }
-  
-  Write-Ok "Cleanup complete. Infrastructure stopped safely."
-  Write-Host ""
-  Write-Host "Note: WSL (VmmemWSL) may stay running for a few minutes - this is normal." -ForegroundColor Cyan
-  Write-Host "Fix the issue and run: .\bootstrap.ps1 apply" -ForegroundColor Yellow
+  } catch {}
+  Ok "Cleanup complete"
   exit 1
+}
+
+function Wait-PodsReady {
+  param([int]$TimeoutSec = 600)
+  Info "Waiting for pods in namespace 'infra'..."
+  $elapsed = 0
+  $interval = 3
+  while ($elapsed -lt $TimeoutSec) {
+    Start-Sleep -Seconds $interval
+    $elapsed += $interval
+    $podsJson = kubectl get pods -n infra -o json 2>$null
+    if ($podsJson) {
+      $items = ($podsJson | ConvertFrom-Json).items
+      $total = $items.Count
+      $ready = 0
+      foreach ($p in $items) {
+        $cs = $p.status.containerStatuses
+        if ($null -ne $cs -and ($cs | Where-Object { -not $_.ready }).Count -eq 0) { $ready++ }
+      }
+      Write-Host ("Pods ready: {0}/{1}  elapsed={2}s" -f $ready, $total, $elapsed)
+      if ($total -gt 0 -and $ready -eq $total) { return $true }
+    }
+  }
+  return $false
 }
 
 function Apply-Infrastructure {
-  Write-Step "Applying infrastructure..."
-  
-  # Check for existing cluster and clean state if needed
-  $existingClusters = $null
+  Check-Prerequisites
+
+  if (-not (Test-Path $TfDir)) { throw "terraform folder not found at $TfDir" }
+
+  # Clean old cluster each run to avoid context races
   try {
-    $existingClusters = kind get clusters 2>&1 | Out-String
-  } catch {
-    $existingClusters = ""
-  }
-  
-  if ($existingClusters -match "reporunner") {
-    Write-Host "Found existing 'reporunner' cluster. Cleaning up first..." -ForegroundColor Yellow
-    kind delete cluster --name reporunner 2>&1 | Out-Null
-    Write-Ok "Old cluster removed"
-  }
-  
-  # Clean stale Terraform state if cluster doesn't exist
-  if (Test-Path "$PSScriptRoot\terraform\terraform.tfstate") {
-    $stateContent = Get-Content "$PSScriptRoot\terraform\terraform.tfstate" -Raw -ErrorAction SilentlyContinue
-    if ($stateContent -and $stateContent -match "reporunner" -and -not ($existingClusters -match "reporunner")) {
-      Write-Host "Cleaning stale Terraform state..." -ForegroundColor Yellow
-      Remove-Item "$PSScriptRoot\terraform\terraform.tfstate*" -Force
-      Write-Ok "Stale state cleaned"
+    $existing = kind get clusters 2>&1 | Out-String
+    if ($existing -match "reporunner") {
+      Info "Deleting existing 'reporunner' cluster..."
+      kind delete cluster --name reporunner 2>&1 | Out-Null
     }
-  }
-  
-  $script:DeploymentInProgress = $true
+  } catch {}
 
-  Push-Location "$PSScriptRoot\terraform"
+  Push-Location $TfDir
   try {
-    if (-not (Test-Path ".terraform")) { 
-      Write-Step "Initializing Terraform..."
-      terraform init
-      if ($LASTEXITCODE -ne 0) {
-        throw "Terraform init failed"
-      }
-    }
+    Info "terraform init (upgrade)..."
+    terraform init -input=false -no-color -upgrade
+    if ($LASTEXITCODE -ne 0) { throw "terraform init failed" }
 
-    Write-Step "Creating kind cluster and deploying services..."
-    Write-Host "Images are pre-pulled. Deployment should be fast!" -ForegroundColor Green
-    
-    terraform apply -auto-approve
-    
-    if ($LASTEXITCODE -ne 0) {
-      throw "Terraform apply failed or was interrupted"
-    }
+    Info "terraform apply..."
+    terraform apply -auto-approve -no-color -input=false -lock-timeout=60s
+    if ($LASTEXITCODE -ne 0) { throw "terraform apply failed" }
+    Ok "terraform apply finished"
 
-    $script:DeploymentInProgress = $false
-    
-    Write-Ok "Terraform apply completed!"
-    Write-Host ""
-    Write-Step "Waiting for pods to become ready..."
-    Write-Host "  MAXIMUM SPEED MODE - 4x resources" -ForegroundColor Cyan
-    Write-Host "  First run: 1-2 min (pulling images)" -ForegroundColor Yellow
-    Write-Host "  Subsequent runs: 10-20 sec (images cached)" -ForegroundColor Green
-    Write-Host "  Total RAM: ~2.5GB (Redis 256MB + MongoDB 1GB + Kafka 2GB + OTel 256MB)" -ForegroundColor DarkGray
-    Write-Host ""
-    
-    # Wait for pods to be ready - generous timeout for first run
-    $timeout = 900  # 15 minutes - plenty of time for image pulls
-    $elapsed = 0
-    $allReady = $false
-    
-    while (-not $allReady -and $elapsed -lt $timeout) {
-      Start-Sleep -Seconds 3  # Check every 3 seconds for faster feedback
-      $elapsed += 3
-      
-      $podsJson = kubectl get pods -n infra -o json 2>$null
-      if ($podsJson) {
-        $pods = ($podsJson | ConvertFrom-Json).items
-        $readyCount = 0
-        $totalCount = $pods.Count
-        
-        foreach ($pod in $pods) {
-          if ($pod.status.phase -eq "Running") {
-            $readyCount++
-          }
-        }
-        
-        Write-Host "`rPods ready: $readyCount/$totalCount (${elapsed}s elapsed)" -NoNewline
-        
-        if ($readyCount -eq $totalCount -and $totalCount -gt 0) {
-          $allReady = $true
-        }
-      }
-    }
-    
-    Write-Host ""
-    
-    if ($allReady) {
-      Write-Ok "All pods are ready!"
+    # Point kubectl at the just-written kubeconfig
+    if (-not (Test-Path $KubeconfigPath)) { throw "kubeconfig not found at $KubeconfigPath" }
+    Set-KubeEnv
+
+    # Quick sanity checks
+    $ctxs = kubectl config get-contexts 2>$null | Out-String
+    if ($ctxs -notmatch "kind-reporunner") { throw "kubectl context kind-reporunner not found" }
+
+    $ns = kubectl get ns infra -o jsonpath='{.metadata.name}' 2>$null
+    if ($ns -ne "infra") { throw "namespace 'infra' not found" }
+
+    Info "Current pods:"
+    kubectl get pods -n infra
+
+    $ready = Wait-PodsReady -TimeoutSec 600
+    if ($ready) {
+      Ok "All pods ready"
     } else {
-      Write-Host ""
-      Write-Host "Pods are taking longer than expected. This usually means:" -ForegroundColor Yellow
-      Write-Host "  - Docker is pulling images (first time is slow)" -ForegroundColor White
-      Write-Host "  - Insufficient resources allocated to Docker" -ForegroundColor White
-      Write-Host ""
-      Write-Host "Check status with:" -ForegroundColor Yellow
-      Write-Host "  kubectl get pods -n infra" -ForegroundColor White
-      Write-Host "  kubectl logs -n infra [pod-name]" -ForegroundColor White
+      Err "Pods not ready within timeout"
+      kubectl get pods -n infra -o wide
+      exit 1
     }
-    
-    Write-Host ""
-    Write-Host "Services are running in the background. To stop:" -ForegroundColor Yellow
-    Write-Host "  .\bootstrap.ps1 destroy" -ForegroundColor White
-    Write-Host ""
   } catch {
     Pop-Location
-    $script:DeploymentInProgress = $false
     Safe-Cleanup $_.Exception.Message
   } finally {
-    if ((Get-Location).Path -ne $PSScriptRoot) {
-      Pop-Location
-    }
+    if ((Get-Location).Path -ne $PSScriptRoot) { Pop-Location }
   }
 }
 
 function Destroy-Infrastructure {
-  Write-Step "Destroying infrastructure..."
-
-  Push-Location "$PSScriptRoot\terraform"
+  Check-Prerequisites
+  # Use kubeconfig if it exists
+  if (Test-Path $KubeconfigPath) { Set-KubeEnv }
+  Push-Location $TfDir
   try {
-    terraform destroy -auto-approve
-    Write-Ok "Infrastructure destroyed successfully"
-    
-    # Clean up any orphaned containers
-    $containers = docker ps -aq --filter "name=reporunner" 2>&1
-    if ($containers -and $containers -ne "") {
-      Write-Host "Removing Docker containers..." -ForegroundColor Yellow
-      docker rm -f $containers 2>&1 | Out-Null
-    }
-    
-    Write-Host ""
-    Write-Host "Note: WSL (VmmemWSL) may stay running - this is normal." -ForegroundColor Cyan
-    Write-Host "To force WSL shutdown (will restart Docker Desktop): wsl --shutdown" -ForegroundColor DarkGray
-  } finally {
+    Info "terraform destroy..."
+    terraform destroy -auto-approve -no-color
+    if ($LASTEXITCODE -ne 0) { throw "terraform destroy failed" }
+    Ok "Infrastructure destroyed"
+  } catch {
     Pop-Location
+    Safe-Cleanup $_.Exception.Message
+  } finally {
+    if ((Get-Location).Path -ne $PSScriptRoot) { Pop-Location }
   }
 }
 
 function Show-Status {
-  Write-Step "Checking infrastructure status..."
-
-  $clusters = kind get clusters 2>&1
-  if ($clusters -match "reporunner") {
-    Write-Ok "kind cluster 'reporunner' is running"
-
-    Write-Step "Pods in namespace 'infra'..."
-    kubectl get pods -n infra
-
-    Write-Step "Service endpoints:"
-    Write-Host "Jaeger UI:  http://localhost:30082" -ForegroundColor Green
-    Write-Host "Preview:    http://localhost:30080" -ForegroundColor Green
-  } else {
-    Write-Err "kind cluster 'reporunner' is not running"
-    Write-Host "Run: .\bootstrap.ps1 apply" -ForegroundColor Yellow
-  }
+  Check-Prerequisites
+  if (Test-Path $KubeconfigPath) { Set-KubeEnv }
+  Info "kind clusters:"
+  kind get clusters 2>&1
+  Info "pods (infra):"
+  kubectl get pods -n infra 2>&1
 }
 
 function Reset-Infrastructure {
-  Write-Step "Performing complete reset..."
-
-  Write-Step "Deleting kind cluster..."
+  Check-Prerequisites
+  Info "Deleting kind cluster (if any)..."
   kind delete cluster --name reporunner 2>$null | Out-Null
-
-  Push-Location "$PSScriptRoot\terraform"
-  try {
-    if (Test-Path ".terraform") { Remove-Item -Recurse -Force ".terraform" }
-    Get-ChildItem -Filter "terraform.tfstate*" | ForEach-Object { Remove-Item -Force $_.FullName }
-    Write-Ok "Reset complete"
-    Write-Host "Run: .\bootstrap.ps1 apply" -ForegroundColor Yellow
-  } finally {
-    Pop-Location
+  if (Test-Path $TfDir) {
+    Push-Location $TfDir
+    try {
+      if (Test-Path ".terraform") { Remove-Item -Recurse -Force ".terraform" }
+      Get-ChildItem -Filter "terraform.tfstate*" | ForEach-Object { Remove-Item -Force $_.FullName }
+      Ok "Terraform state reset"
+    } finally { Pop-Location }
   }
+  Ok "Reset complete"
 }
 
 function Verify-Deployment {
-  Write-Step "Verifying deployment..."
-
-  $clusters = kind get clusters 2>&1
-  if (-not ($clusters -match "reporunner")) { 
-    Write-Err "Cluster not found"
-    return $false 
-  }
-  Write-Ok "Cluster exists"
-
-  Write-Step "Checking pod health..."
-  $podsJson = kubectl get pods -n infra -o json 2>$null
-  if (-not $podsJson) { 
-    Write-Err "Failed to list pods"
-    return $false 
-  }
-  
-  $pods = ($podsJson | ConvertFrom-Json).items
-  $allRunning = $true
-  foreach ($p in $pods) {
-    $name = $p.metadata.name
-    $phase = $p.status.phase
-    if ($phase -eq "Running") { 
-      Write-Ok "$name is Running" 
-    } else { 
-      Write-Err "$name is $phase"
-      $allRunning = $false 
-    }
-  }
-
-  if ($allRunning) {
-    Write-Ok "All services are healthy"
-    return $true
-  } else {
-    Write-Err "Some services are not healthy. Check logs: kubectl logs -n infra [pod-name]"
-    return $false
-  }
+  Check-Prerequisites
+  if (Test-Path $KubeconfigPath) { Set-KubeEnv }
+  $clusters = kind get clusters 2>&1 | Out-String
+  if ($clusters -notmatch "reporunner") { Err "Cluster not found"; return }
+  Ok "Cluster exists"
+  Info "pods (infra):"
+  kubectl get pods -n infra
 }
 
-# Main
-Write-Host ""
-Write-Host "--------------------------------------------" -ForegroundColor Cyan
-Write-Host "|   RepoRunner Infrastructure Bootstrap    |" -ForegroundColor Cyan
-Write-Host "--------------------------------------------" -ForegroundColor Cyan
-Write-Host ""
-
-Check-Prerequisites
-
 switch ($Action) {
-  'apply'   { Apply-Infrastructure; Start-Sleep -Seconds 5; Verify-Deployment | Out-Null }
+  'apply'   { Apply-Infrastructure }
   'destroy' { Destroy-Infrastructure }
   'status'  { Show-Status }
   'reset'   { Reset-Infrastructure }
-  'verify'  { Verify-Deployment | Out-Null }
+  'verify'  { Verify-Deployment }
+  default   { Apply-Infrastructure }
 }
-
-Write-Host ""
-Write-Host "Done!" -ForegroundColor Cyan

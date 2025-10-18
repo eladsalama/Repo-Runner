@@ -1,0 +1,208 @@
+
+Terraform used the selected providers to generate the following execution
+plan. Resource actions are indicated with the following symbols:
+  + create
+
+Terraform will perform the following actions:
+
+  # helm_release.mongodb will be created
+  + resource "helm_release" "mongodb" {
+      + atomic                     = false
+      + chart                      = "mongodb"
+      + cleanup_on_fail            = false
+      + create_namespace           = false
+      + dependency_update          = false
+      + disable_crd_hooks          = false
+      + disable_openapi_validation = false
+      + disable_webhooks           = false
+      + force_update               = false
+      + id                         = (known after apply)
+      + lint                       = false
+      + max_history                = 0
+      + metadata                   = (known after apply)
+      + name                       = "mongodb"
+      + namespace                  = "infra"
+      + pass_credentials           = false
+      + recreate_pods              = false
+      + render_subchart_notes      = true
+      + replace                    = false
+      + repository                 = "https://charts.bitnami.com/bitnami"
+      + reset_values               = false
+      + reuse_values               = false
+      + set                        = [
+          + {
+              + name  = "architecture"
+              + value = "standalone"
+                # (1 unchanged attribute hidden)
+            },
+          + {
+              + name  = "auth.enabled"
+              + value = "false"
+                # (1 unchanged attribute hidden)
+            },
+          + {
+              + name  = "persistence.enabled"
+              + value = "false"
+                # (1 unchanged attribute hidden)
+            },
+        ]
+      + set_wo                     = (write-only attribute)
+      + skip_crds                  = false
+      + status                     = "deployed"
+      + timeout                    = 300
+      + verify                     = false
+      + version                    = "18.1.1"
+      + wait                       = false
+      + wait_for_jobs              = false
+    }
+
+  # helm_release.redis will be created
+  + resource "helm_release" "redis" {
+      + atomic                     = false
+      + chart                      = "redis"
+      + cleanup_on_fail            = false
+      + create_namespace           = false
+      + dependency_update          = false
+      + disable_crd_hooks          = false
+      + disable_openapi_validation = false
+      + disable_webhooks           = false
+      + force_update               = false
+      + id                         = (known after apply)
+      + lint                       = false
+      + max_history                = 0
+      + metadata                   = (known after apply)
+      + name                       = "redis"
+      + namespace                  = "infra"
+      + pass_credentials           = false
+      + recreate_pods              = false
+      + render_subchart_notes      = true
+      + replace                    = false
+      + repository                 = "https://charts.bitnami.com/bitnami"
+      + reset_values               = false
+      + reuse_values               = false
+      + set                        = [
+          + {
+              + name  = "architecture"
+              + value = "standalone"
+                # (1 unchanged attribute hidden)
+            },
+          + {
+              + name  = "auth.enabled"
+              + value = "false"
+                # (1 unchanged attribute hidden)
+            },
+          + {
+              + name  = "master.persistence.enabled"
+              + value = "false"
+                # (1 unchanged attribute hidden)
+            },
+          + {
+              + name  = "replica.replicaCount"
+              + value = "0"
+                # (1 unchanged attribute hidden)
+            },
+        ]
+      + set_wo                     = (write-only attribute)
+      + skip_crds                  = false
+      + status                     = "deployed"
+      + timeout                    = 300
+      + verify                     = false
+      + version                    = "23.1.3"
+      + wait                       = false
+      + wait_for_jobs              = false
+    }
+
+  # kind_cluster.cluster will be created
+  + resource "kind_cluster" "cluster" {
+      + client_certificate     = (known after apply)
+      + client_key             = (known after apply)
+      + cluster_ca_certificate = (known after apply)
+      + completed              = (known after apply)
+      + endpoint               = (known after apply)
+      + id                     = (known after apply)
+      + kubeconfig             = (known after apply)
+      + kubeconfig_path        = "./kubeconfig"
+      + name                   = "reporunner"
+      + node_image             = (known after apply)
+      + wait_for_ready         = true
+
+      + kind_config {
+          + api_version = "kind.x-k8s.io/v1alpha4"
+          + kind        = "Cluster"
+
+          + node {
+              + image = "kindest/node:v1.30.0"
+              + role  = "control-plane"
+
+              + extra_port_mappings {
+                  + container_port = 30080
+                  + host_port      = 30080
+                  + protocol       = "TCP"
+                }
+            }
+        }
+    }
+
+  # kubernetes_namespace.infra will be created
+  + resource "kubernetes_namespace" "infra" {
+      + id                               = (known after apply)
+      + wait_for_default_service_account = false
+
+      + metadata {
+          + generation       = (known after apply)
+          + name             = "infra"
+          + resource_version = (known after apply)
+          + uid              = (known after apply)
+        }
+    }
+
+  # null_resource.wait_for_kube will be created
+  + resource "null_resource" "wait_for_kube" {
+      + id = (known after apply)
+    }
+
+Plan: 5 to add, 0 to change, 0 to destroy.
+
+Changes to Outputs:
+  + cluster_name                 = "reporunner"
+  + kafka_endpoint               = "kafka.infra.svc.cluster.local:9092"
+  + kubeconfig_path              = "./kubeconfig"
+  + localhost_ports              = {
+      + preview_urls = "30080"
+    }
+  + mongodb_endpoint             = "mongodb.infra.svc.cluster.local:27017"
+  + otel_collector_grpc_endpoint = "otel-collector.infra.svc.cluster.local:4317"
+  + otel_collector_http_endpoint = "otel-collector.infra.svc.cluster.local:4318"
+  + redis_endpoint               = "redis-master.infra.svc.cluster.local:6379"
+kind_cluster.cluster: Creating...
+kind_cluster.cluster: Still creating... [00m10s elapsed]
+kind_cluster.cluster: Still creating... [00m20s elapsed]
+kind_cluster.cluster: Still creating... [00m30s elapsed]
+kind_cluster.cluster: Creation complete after 32s [id=reporunner-]
+null_resource.wait_for_kube: Creating...
+null_resource.wait_for_kube: Provisioning with 'local-exec'...
+null_resource.wait_for_kube (local-exec): Executing: ["PowerShell" "-Command" "$env:KUBECONFIG = \"./kubeconfig\"\r\nfor ($i = 0; $i -lt 60; $i++) {\r\n  kubectl get nodes 2>$null\r\n  if ($LASTEXITCODE -eq 0) { exit 0 }\r\n  Start-Sleep -Seconds 2\r\n}\r\nWrite-Error \"Timed out waiting for kube-apiserver to become ready\"\r\nexit 1\r\n"]
+null_resource.wait_for_kube (local-exec): NAME                       STATUS   ROLES           AGE   VERSION
+null_resource.wait_for_kube (local-exec): reporunner-control-plane   Ready    control-plane   21s   v1.30.0
+null_resource.wait_for_kube: Creation complete after 0s [id=3413220761275433075]
+kubernetes_namespace.infra: Creating...
+kubernetes_namespace.infra: Creation complete after 0s [id=infra]
+helm_release.redis: Creating...
+helm_release.mongodb: Creating...
+helm_release.redis: Creation complete after 6s [id=redis]
+helm_release.mongodb: Creation complete after 7s [id=mongodb]
+
+Apply complete! Resources: 5 added, 0 changed, 0 destroyed.
+
+Outputs:
+
+cluster_name = "reporunner"
+kafka_endpoint = "kafka.infra.svc.cluster.local:9092"
+kubeconfig_path = "./kubeconfig"
+localhost_ports = {
+  "preview_urls" = "30080"
+}
+mongodb_endpoint = "mongodb.infra.svc.cluster.local:27017"
+otel_collector_grpc_endpoint = "otel-collector.infra.svc.cluster.local:4317"
+otel_collector_http_endpoint = "otel-collector.infra.svc.cluster.local:4318"
+redis_endpoint = "redis-master.infra.svc.cluster.local:6379"

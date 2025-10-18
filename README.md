@@ -8,7 +8,7 @@ Showcase the ability to run arbitrary projects safely, not just my own, and to r
 ## Tech Stack (MVP)
 - **Browser Extension**: TypeScript (Manifest V3), gRPC-Web to the gateway
 - **Backend**: .NET 8 services (Gateway + Orchestrator + Workers) with **gRPC**
-- **Events**: **Redpanda** (Kafka-API compatible)
+- **Events**: **Kafka** (Bitnami chart for local demo)
 - **Data**: **MongoDB Community** (metadata, chat), **Redis Stack** (cache + vector search)
 - **Runtime**: **Kubernetes** via **kind/k3d** (per-run namespaces, quotas, TTL cleanup)
 - **Observability**: **OpenTelemetry** (traces/metrics/logs)

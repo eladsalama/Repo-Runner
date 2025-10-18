@@ -128,8 +128,9 @@ kubectl port-forward -n infra svc/mongodb 27017:27017
 # Redis
 kubectl port-forward -n infra svc/redis-master 6379:6379
 
-# Redpanda Admin API
-kubectl port-forward -n infra svc/redpanda 9644:9644
+# Kafka (broker)
+# Port-forward the kafka service to reach it from localhost (for testing/tools)
+kubectl port-forward -n infra svc/kafka 9092:9092
 ```
 
 ---
@@ -163,7 +164,7 @@ terraform output
 ```
 MongoDB:  mongodb://mongodb.infra.svc.cluster.local:27017
 Redis:    redis-master.infra.svc.cluster.local:6379
-Redpanda: redpanda.infra.svc.cluster.local:9092
+Kafka: kafka.infra.svc.cluster.local:9092
 OTel:     otel-collector.infra.svc.cluster.local:4317
 ```
 
