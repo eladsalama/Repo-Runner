@@ -1,7 +1,4 @@
 # Pre-pull images to avoid ImagePullBackOff on first run
-# Do not stop on non-terminating errors from external commands; we'll inspect
-# exit codes explicitly. Setting to Continue avoids NativeCommandError for
-# docker pull failures so the script can report them cleanly.
 $ErrorActionPreference = "Continue"
 
 Write-Host "`nPre-pulling required images..." -ForegroundColor Cyan

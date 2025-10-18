@@ -22,3 +22,6 @@ dist/
 
 # Docker/K8s artifacts
 **/.cache/
+
+# Terraform logs
+infra/logs/**
