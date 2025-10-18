@@ -1,6 +1,7 @@
 # Terraform
 .terraform/
 .terraform.lock.hcl
+.terraform.tfstate.lock.info
 terraform.tfstate
 terraform.tfstate.backup
 *.tfplan
@@ -13,6 +14,9 @@ kubeconfig
 # Crash logs
 crash.log
 crash.*.log
+
+# Generated logs and ephemeral artifacts
+logs/
 
 # Override files
 override.tf

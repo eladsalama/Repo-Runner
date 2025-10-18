@@ -6,7 +6,7 @@ This directory contains Terraform configuration for provisioning the local devel
 
 The infrastructure runs entirely on your local machine using:
 - **kind** (Kubernetes in Docker) - local K8s cluster
-- **Redpanda** - Kafka-compatible event streaming (single broker)
+- **Kafka** - event streaming (Bitnami chart, single-node for local demo)
 - **Redis Stack** - Redis with RediSearch for vector storage
 - **MongoDB Community** - document database for metadata
 - **OpenTelemetry Collector** - observability backend
@@ -104,7 +104,7 @@ kubectl get pods -n infra
 # NAME                              READY   STATUS    RESTARTS   AGE
 # mongodb-xxxxxxxxxx-xxxxx          1/1     Running   0          5m
 # otel-collector-xxxxxxxxxx-xxxxx   1/1     Running   0          5m
-# redpanda-0                        1/1     Running   0          5m
+# kafka-0                           1/1     Running   0          5m
 # redis-master-0                    1/1     Running   0          5m
 # jaeger-xxxxxxxxxx-xxxxx           1/1     Running   0          5m
 ```
@@ -116,8 +116,8 @@ Once deployed, you can access:
 - **Jaeger UI**: http://localhost:30082
 - **Preview URLs** (for running apps): http://localhost:30080/run-<runId>
 
-Internal services (accessible from within the cluster):
-- **Redpanda**: `redpanda.infra.svc.cluster.local:9092`
+- Internal services (accessible from within the cluster):
+- **Kafka**: `kafka.infra.svc.cluster.local:9092`
 - **Redis**: `redis-master.infra.svc.cluster.local:6379`
 - **MongoDB**: `mongodb.infra.svc.cluster.local:27017`
 - **OTel Collector**: `otel-collector.infra.svc.cluster.local:4317` (gRPC)
@@ -142,7 +142,7 @@ kubectl get pods -n infra
 kubectl describe pod -n infra -l app.kubernetes.io/name=mongodb
 
 # View logs
-kubectl logs -n infra -l app.kubernetes.io/name=redpanda --tail=50
+kubectl logs -n infra -l app.kubernetes.io/name=kafka --tail=50
 ```
 
 ### Port Forward (if needed)
@@ -154,8 +154,9 @@ kubectl port-forward -n infra svc/redis-master 6379:6379
 # Access MongoDB
 kubectl port-forward -n infra svc/mongodb 27017:27017
 
-# Access Redpanda Admin API
-kubectl port-forward -n infra svc/redpanda 9644:9644
+# Access Kafka (no admin API by default for Bitnami chart)
+# Use port-forwarding to reach brokers if needed. Example (for consumer tooling):
+# kubectl port-forward -n infra svc/kafka 9092:9092
 ```
 
 ## Cleanup
@@ -218,12 +219,11 @@ Increase Docker Desktop resources:
 - Docker Desktop → Settings → Resources
 - Recommended: 8GB RAM, 4 CPUs minimum
 
-### Redpanda not starting
+### Kafka not starting
 
-Redpanda requires sufficient resources. If it fails:
-- Check logs: `kubectl logs -n infra redpanda-0`
-- Reduce replicas to 1 (already set in config)
-- Ensure Docker has at least 4GB RAM allocated
+Kafka (Bitnami single-node) may fail if resources are constrained. If it fails:
+- Check logs: `kubectl logs -n infra kafka-0 --all-containers`
+- Ensure Docker has enough memory (increase in Docker Desktop resources)
 
 ### Clean slate
 
@@ -286,7 +286,7 @@ After infrastructure is running:
 │  ┌─────────────────────────────────────────────────┐  │
 │  │ Namespace: infra                                │  │
 │  │                                                 │  │
-│  │  • Redpanda (Kafka)     :9092                   │  │
+│  │  • Kafka (broker)       :9092                   │  │
 │  │  • Redis Stack          :6379                   │  │
 │  │  • MongoDB              :27017                  │  │
 │  │  • OTel Collector       :4317, :4318            │  │
@@ -318,7 +318,7 @@ After infrastructure is running:
 
 All components used are free and open-source:
 - ✅ kind (Apache 2.0)
-- ✅ Redpanda Community (BSL 1.1)
+- ✅ Kafka (Bitnami chart for local demo)
 - ✅ Redis Stack (SSPL/RSALv2)
 - ✅ MongoDB Community (SSPL)
 - ✅ OpenTelemetry (Apache 2.0)
