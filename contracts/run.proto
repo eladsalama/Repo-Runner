@@ -1,0 +1,78 @@
+syntax = "proto3";
+
+option csharp_namespace = "RepoRunner.Contracts";
+
+package reporunner;
+
+import "google/protobuf/empty.proto";
+import "google/protobuf/timestamp.proto";
+
+// RunService handles lifecycle operations for repo runs
+// Exposed via gRPC-Web for browser extension
+service RunService {
+  // Start a new run for a GitHub repo
+  rpc StartRun(StartRunRequest) returns (StartRunResponse);
+  
+  // Stop an active run
+  rpc StopRun(StopRunRequest) returns (google.protobuf.Empty);
+  
+  // Get current status of a run
+  rpc GetRunStatus(GetRunStatusRequest) returns (RunStatusResponse);
+  
+  // Stream logs for a run (server-streaming)
+  rpc StreamLogs(StreamLogsRequest) returns (stream LogEntry);
+}
+
+message StartRunRequest {
+  string repo_url = 1;
+  string branch = 2; // optional, defaults to main/master
+}
+
+message StartRunResponse {
+  string run_id = 1;
+  RunStatus status = 2;
+}
+
+message StopRunRequest {
+  string run_id = 1;
+}
+
+message GetRunStatusRequest {
+  string run_id = 1;
+}
+
+message RunStatusResponse {
+  string run_id = 1;
+  RunStatus status = 2;
+  string preview_url = 3;
+  google.protobuf.Timestamp started_at = 4;
+  google.protobuf.Timestamp ended_at = 5;
+  string error_message = 6;
+}
+
+message StreamLogsRequest {
+  string run_id = 1;
+  LogSource source = 2; // build or run
+}
+
+message LogEntry {
+  google.protobuf.Timestamp timestamp = 1;
+  LogSource source = 2;
+  string line = 3;
+}
+
+enum RunStatus {
+  RUN_STATUS_UNSPECIFIED = 0;
+  RUN_STATUS_QUEUED = 1;
+  RUN_STATUS_BUILDING = 2;
+  RUN_STATUS_RUNNING = 3;
+  RUN_STATUS_SUCCEEDED = 4;
+  RUN_STATUS_FAILED = 5;
+  RUN_STATUS_STOPPED = 6;
+}
+
+enum LogSource {
+  LOG_SOURCE_UNSPECIFIED = 0;
+  LOG_SOURCE_BUILD = 1;
+  LOG_SOURCE_RUN = 2;
+}
