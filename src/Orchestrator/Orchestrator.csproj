@@ -10,10 +10,15 @@
   <ItemGroup>
     <PackageReference Include="Grpc.AspNetCore" Version="2.71.0" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="9.0.8" />
+    <PackageReference Include="MongoDB.Driver" Version="3.5.0" />
   </ItemGroup>
 
   <ItemGroup>
     <Protobuf Include="..\..\contracts\run.proto" GrpcServices="Server" />
     <Protobuf Include="..\..\contracts\events.proto" GrpcServices="None" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\shared\Shared\Shared.csproj" />
   </ItemGroup>
 </Project>
