@@ -1,0 +1,32 @@
+{
+  "name": "repo-runner",
+  "version": "1.0.0",
+  "description": "RepoRunner is a local-first tool that lets you clone any **public GitHub repo** with a Dockerfile, **build it**, and **run it** inside an **isolated Kubernetes sandbox** on your own machine. A built-in chat (“Ask the Repo”) answers questions about the codebase (tech stack, data flow, caching) using local RAG — no paid services required.",
+  "main": "index.js",
+  "directories": {
+    "doc": "docs"
+  },
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "generate-proto": "node scripts/generate-proto.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/eladsalama/Repo-Runner.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/eladsalama/Repo-Runner/issues"
+  },
+  "homepage": "https://github.com/eladsalama/Repo-Runner#readme",
+  "devDependencies": {
+    "@grpc/grpc-js": "^1.14.0",
+    "@types/google-protobuf": "^3.15.12",
+    "google-protobuf": "^4.0.0",
+    "grpc-tools": "^1.13.0",
+    "grpc-web": "^2.0.2",
+    "ts-protoc-gen": "^0.15.0"
+  }
+}

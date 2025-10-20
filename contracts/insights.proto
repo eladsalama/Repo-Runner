@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+option csharp_namespace = "RepoRunner.Contracts";
+
+package reporunner;
+
+import "google/protobuf/timestamp.proto";
+
+// InsightsService provides LLM-powered repository insights
+// Exposed via gRPC-Web for browser extension
+service InsightsService {
+  // Ask a question about the repository using RAG
+  rpc AskRepo(AskRepoRequest) returns (AskRepoResponse);
+}
+
+message AskRepoRequest {
+  string repo_id = 1;
+  string question = 2;
+}
+
+message AskRepoResponse {
+  string answer = 1;
+  repeated Citation citations = 2;
+  google.protobuf.Timestamp generated_at = 3;
+}
+
+message Citation {
+  string file_path = 1;
+  int32 line_start = 2;
+  int32 line_end = 3;
+  string snippet = 4;
+}

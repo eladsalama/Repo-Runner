@@ -1,0 +1,52 @@
+syntax = "proto3";
+
+option csharp_namespace = "RepoRunner.Contracts.Events";
+
+package reporunner.events;
+
+import "google/protobuf/timestamp.proto";
+
+// Event messages for Redis Streams coordination between services
+
+message RunRequested {
+  string run_id = 1;
+  string repo_url = 2;
+  string branch = 3;
+  google.protobuf.Timestamp requested_at = 4;
+}
+
+message BuildSucceeded {
+  string run_id = 1;
+  string image_ref = 2;
+  repeated int32 ports = 3;
+  google.protobuf.Timestamp completed_at = 4;
+  string logs_ref = 5; // reference to build logs in Mongo
+}
+
+message BuildFailed {
+  string run_id = 1;
+  string error = 2;
+  repeated string suggested_fixes = 3;
+  google.protobuf.Timestamp failed_at = 4;
+  string logs_ref = 5;
+}
+
+message RunSucceeded {
+  string run_id = 1;
+  string preview_url = 2;
+  string namespace = 3;
+  google.protobuf.Timestamp started_at = 4;
+}
+
+message RunFailed {
+  string run_id = 1;
+  string error = 2;
+  google.protobuf.Timestamp failed_at = 3;
+}
+
+message IndexingComplete {
+  string run_id = 1;
+  string repo_id = 2;
+  int32 doc_count = 3;
+  google.protobuf.Timestamp completed_at = 4;
+}
