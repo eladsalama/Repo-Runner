@@ -9,10 +9,15 @@
 
   <ItemGroup>
     <PackageReference Include="Grpc.AspNetCore" Version="2.71.0" />
+    <PackageReference Include="Microsoft.Extensions.Diagnostics.HealthChecks" Version="9.0.10" />
     <PackageReference Include="Microsoft.Extensions.Hosting" Version="9.0.8" />
   </ItemGroup>
 
   <ItemGroup>
     <Protobuf Include="..\..\contracts\events.proto" GrpcServices="None" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\..\shared\Shared\Shared.csproj" />
   </ItemGroup>
 </Project>
