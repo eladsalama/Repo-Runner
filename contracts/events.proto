@@ -8,19 +8,36 @@ import "google/protobuf/timestamp.proto";
 
 // Event messages for Redis Streams coordination between services
 
+enum RunMode {
+  RUN_MODE_UNSPECIFIED = 0;
+  RUN_MODE_DOCKERFILE = 1;
+  RUN_MODE_COMPOSE = 2;
+}
+
 message RunRequested {
   string run_id = 1;
   string repo_url = 2;
   string branch = 3;
   google.protobuf.Timestamp requested_at = 4;
+  RunMode mode = 5;
+  string compose_path = 6; // e.g., "docker-compose.yml" if mode is COMPOSE
+  string primary_service = 7; // for COMPOSE mode
+}
+
+message ServiceInfo {
+  string name = 1;
+  string image_ref = 2;
+  repeated int32 ports = 3;
 }
 
 message BuildSucceeded {
   string run_id = 1;
-  string image_ref = 2;
+  string image_ref = 2; // for DOCKERFILE mode: single image
   repeated int32 ports = 3;
   google.protobuf.Timestamp completed_at = 4;
   string logs_ref = 5; // reference to build logs in Mongo
+  RunMode mode = 6;
+  repeated ServiceInfo services = 7; // for COMPOSE mode: multiple services
 }
 
 message BuildFailed {

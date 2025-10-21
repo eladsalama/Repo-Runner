@@ -5,7 +5,13 @@ var builder = WebApplication.CreateBuilder(args);
 // Add gRPC services
 builder.Services.AddGrpc();
 
-// Add CORS for gRPC-Web
+// Register RunServiceImpl as singleton so it can be injected into controllers
+builder.Services.AddSingleton<RunServiceImpl>();
+
+// Add controllers for REST endpoints (MVP skeleton)
+builder.Services.AddControllers();
+
+// Add CORS for gRPC-Web and REST
 builder.Services.AddCors(o => o.AddPolicy("AllowAll", builder =>
 {
     builder.AllowAnyOrigin()
@@ -24,6 +30,9 @@ app.UseCors("AllowAll");
 app.MapGrpcService<RunServiceImpl>().EnableGrpcWeb();
 app.MapGrpcService<InsightsServiceImpl>().EnableGrpcWeb();
 
-app.MapGet("/", () => "RepoRunner Gateway - gRPC services available");
+// Map REST controllers (MVP skeleton)
+app.MapControllers();
+
+app.MapGet("/", () => "RepoRunner Gateway - gRPC and REST endpoints available");
 
 app.Run();

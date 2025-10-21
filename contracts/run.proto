@@ -26,11 +26,16 @@ service RunService {
 message StartRunRequest {
   string repo_url = 1;
   string branch = 2; // optional, defaults to main/master
+  RunMode mode = 3;
+  string compose_path = 4; // e.g., "docker-compose.yml" if mode is COMPOSE
+  string primary_service = 5; // for COMPOSE mode: which service to expose as preview URL
 }
 
 message StartRunResponse {
   string run_id = 1;
   RunStatus status = 2;
+  RunMode mode = 3;
+  string primary_service = 4;
 }
 
 message StopRunRequest {
@@ -48,11 +53,14 @@ message RunStatusResponse {
   google.protobuf.Timestamp started_at = 4;
   google.protobuf.Timestamp ended_at = 5;
   string error_message = 6;
+  RunMode mode = 7;
+  string primary_service = 8;
 }
 
 message StreamLogsRequest {
   string run_id = 1;
   LogSource source = 2; // build or run
+  string service_name = 3; // optional, for COMPOSE mode: filter logs by service
 }
 
 message LogEntry {
@@ -69,6 +77,12 @@ enum RunStatus {
   RUN_STATUS_SUCCEEDED = 4;
   RUN_STATUS_FAILED = 5;
   RUN_STATUS_STOPPED = 6;
+}
+
+enum RunMode {
+  RUN_MODE_UNSPECIFIED = 0;
+  RUN_MODE_DOCKERFILE = 1;
+  RUN_MODE_COMPOSE = 2;
 }
 
 enum LogSource {

@@ -1,0 +1,262 @@
+// popup.ts - Popup UI logic
+
+const GATEWAY_URL = 'http://localhost:5247'; // Gateway API URL
+
+interface RunConfig {
+  repoUrl: string;
+  mode: 'DOCKERFILE' | 'COMPOSE';
+  composePath?: string;
+  primaryService?: string;
+}
+
+interface RunStatus {
+  runId: string;
+  status: string;
+  previewUrl?: string;
+  mode?: string;
+  primaryService?: string;
+}
+
+let currentRunId: string | null = null;
+let statusPollInterval: number | null = null;
+
+/**
+ * Initialize popup with stored repo info
+ */
+async function initialize(): Promise<void> {
+  const data = await chrome.storage.local.get(['repoUrl', 'mode', 'composePath']);
+  
+  if (!data.repoUrl) {
+    showError('No repository selected. Please navigate to a GitHub repo with a Dockerfile or docker-compose.yml');
+    return;
+  }
+
+  const repoInfo = document.getElementById('repoInfo')!;
+  const repoUrlEl = document.getElementById('repoUrl')!;
+  const modeEl = document.getElementById('mode')!;
+  
+  repoUrlEl.textContent = data.repoUrl.replace('.git', '').replace('https://github.com/', '');
+  modeEl.textContent = data.mode || 'DOCKERFILE';
+  repoInfo.style.display = 'block';
+
+  // If COMPOSE mode, show service selector (simulated for now)
+  if (data.mode === 'COMPOSE') {
+    await loadComposeServices(data.repoUrl);
+  }
+}
+
+/**
+ * Load compose services (placeholder - will parse docker-compose.yml later)
+ */
+async function loadComposeServices(repoUrl: string): Promise<void> {
+  const serviceSelector = document.getElementById('serviceSelector')!;
+  const primaryServiceDropdown = document.getElementById('primaryService') as HTMLSelectElement;
+  
+  // TODO: Fetch actual services from docker-compose.yml via API
+  // For now, simulate common services
+  const mockServices = ['web', 'app', 'api', 'frontend'];
+  
+  primaryServiceDropdown.innerHTML = '';
+  mockServices.forEach(service => {
+    const option = document.createElement('option');
+    option.value = service;
+    option.textContent = service;
+    primaryServiceDropdown.appendChild(option);
+  });
+  
+  serviceSelector.style.display = 'block';
+}
+
+/**
+ * Start a run
+ */
+async function startRun(): Promise<void> {
+  const data = await chrome.storage.local.get(['repoUrl', 'mode', 'composePath']);
+  const primaryServiceDropdown = document.getElementById('primaryService') as HTMLSelectElement;
+  
+  const config: RunConfig = {
+    repoUrl: data.repoUrl,
+    mode: data.mode || 'DOCKERFILE',
+    composePath: data.composePath,
+    primaryService: data.mode === 'COMPOSE' ? primaryServiceDropdown?.value : undefined
+  };
+
+  try {
+    updateStatus('Queued', 'Starting run...');
+    showError(''); // Clear errors
+    
+    // TODO: Replace with actual gRPC-Web call to Gateway StartRun
+    // For MVP skeleton, simulate with REST call
+    const response = await fetch(`${GATEWAY_URL}/api/runs/start`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        repoUrl: config.repoUrl,
+        branch: 'main',
+        mode: config.mode,
+        composePath: config.composePath,
+        primaryService: config.primaryService
+      })
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+    }
+
+    const result = await response.json();
+    currentRunId = result.runId;
+    
+    // Show stop button, hide start button
+    const startBtn = document.getElementById('startBtn')!;
+    const stopBtn = document.getElementById('stopBtn')!;
+    startBtn.style.display = 'none';
+    stopBtn.style.display = 'block';
+    
+    // Start polling status
+    pollStatus();
+    
+  } catch (error) {
+    showError(`Failed to start run: ${(error as Error).message}`);
+    updateStatus('Failed', '');
+  }
+}
+
+/**
+ * Stop a run
+ */
+async function stopRun(): Promise<void> {
+  if (!currentRunId) return;
+
+  try {
+    // TODO: Replace with actual gRPC-Web call
+    await fetch(`${GATEWAY_URL}/api/runs/${currentRunId}/stop`, {
+      method: 'POST'
+    });
+    
+    updateStatus('Stopped', 'Run stopped by user');
+    stopPolling();
+    resetButtons();
+    
+  } catch (error) {
+    showError(`Failed to stop run: ${(error as Error).message}`);
+  }
+}
+
+/**
+ * Poll run status every 2 seconds
+ */
+function pollStatus(): void {
+  if (statusPollInterval) {
+    clearInterval(statusPollInterval);
+  }
+
+  statusPollInterval = window.setInterval(async () => {
+    if (!currentRunId) {
+      stopPolling();
+      return;
+    }
+
+    try {
+      // TODO: Replace with actual gRPC-Web call
+      const response = await fetch(`${GATEWAY_URL}/api/runs/${currentRunId}/status`);
+      
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+
+      const status: RunStatus = await response.json();
+      updateStatus(status.status, '');
+      
+      // If terminal state, stop polling
+      if (['SUCCEEDED', 'FAILED', 'STOPPED'].includes(status.status)) {
+        stopPolling();
+        resetButtons();
+        
+        if (status.status === 'SUCCEEDED' && status.previewUrl) {
+          showSuccess(`✓ Running at ${status.previewUrl}`);
+        }
+      }
+      
+    } catch (error) {
+      console.error('Status poll error:', error);
+    }
+  }, 2000);
+}
+
+/**
+ * Stop polling
+ */
+function stopPolling(): void {
+  if (statusPollInterval) {
+    clearInterval(statusPollInterval);
+    statusPollInterval = null;
+  }
+}
+
+/**
+ * Reset buttons to initial state
+ */
+function resetButtons(): void {
+  const startBtn = document.getElementById('startBtn')!;
+  const stopBtn = document.getElementById('stopBtn')!;
+  startBtn.style.display = 'block';
+  stopBtn.style.display = 'none';
+}
+
+/**
+ * Update status display
+ */
+function updateStatus(status: string, message: string): void {
+  const statusText = document.getElementById('statusText')!;
+  const statusIcon = document.getElementById('statusIcon')!;
+  
+  statusText.textContent = message || status;
+  
+  // Update icon color based on status
+  if (status === 'SUCCEEDED') {
+    statusIcon.style.background = '#4ade80';
+  } else if (status === 'FAILED') {
+    statusIcon.style.background = '#ef4444';
+  } else if (status === 'RUNNING') {
+    statusIcon.style.background = '#3b82f6';
+  } else {
+    statusIcon.style.background = '#fbbf24';
+  }
+}
+
+/**
+ * Show error message
+ */
+function showError(message: string): void {
+  const errorEl = document.getElementById('error')!;
+  if (message) {
+    errorEl.textContent = message;
+    errorEl.style.display = 'block';
+  } else {
+    errorEl.style.display = 'none';
+  }
+}
+
+/**
+ * Show success message
+ */
+function showSuccess(message: string): void {
+  const statusText = document.getElementById('statusText')!;
+  statusText.textContent = message;
+}
+
+// Event listeners
+document.addEventListener('DOMContentLoaded', async () => {
+  await initialize();
+  
+  const startBtn = document.getElementById('startBtn')!;
+  const stopBtn = document.getElementById('stopBtn')!;
+  
+  startBtn.addEventListener('click', startRun);
+  stopBtn.addEventListener('click', stopRun);
+});
+
+// Cleanup on popup close
+window.addEventListener('unload', () => {
+  stopPolling();
+});
