@@ -1,5 +1,7 @@
 using Gateway.Services;
 using Shared.Streams;
+using Shared.Repositories;
+using Shared.Cache;
 using RepoRunner.Contracts.Events;
 
 var builder = WebApplication.CreateBuilder(args);
@@ -8,6 +10,25 @@ var builder = WebApplication.CreateBuilder(args);
 var redisConnection = builder.Configuration.GetValue<string>("Redis:ConnectionString") 
     ?? "localhost:6379";
 builder.Services.AddRedisStreams(redisConnection);
+
+// Add Run Status Cache
+builder.Services.AddSingleton<IRunStatusCache, RunStatusCache>();
+
+// Add MongoDB
+var mongoConnection = builder.Configuration.GetValue<string>("MongoDB:ConnectionString")
+    ?? "mongodb://localhost:27017";
+var mongoDatabase = builder.Configuration.GetValue<string>("MongoDB:Database")
+    ?? "reporunner";
+builder.Services.AddSingleton<MongoDB.Driver.IMongoClient>(sp =>
+    new MongoDB.Driver.MongoClient(mongoConnection));
+builder.Services.AddSingleton<MongoDB.Driver.IMongoDatabase>(sp =>
+{
+    var client = sp.GetRequiredService<MongoDB.Driver.IMongoClient>();
+    return client.GetDatabase(mongoDatabase);
+});
+
+// Add LogRepository
+builder.Services.AddSingleton<ILogRepository, LogRepository>();
 
 // Add stream producer for RunStopRequested events
 builder.Services.AddStreamProducer<RunStopRequested>(StreamConfig.Streams.RepoRuns);

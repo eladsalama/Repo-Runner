@@ -2,6 +2,8 @@ using Grpc.Core;
 using RepoRunner.Contracts;
 using RepoRunner.Contracts.Events;
 using Shared.Streams;
+using Shared.Repositories;
+using Shared.Cache;
 using System.Collections.Concurrent;
 using Google.Protobuf.WellKnownTypes;
 
@@ -15,15 +17,21 @@ public class RunServiceImpl : RunService.RunServiceBase
 {
     private readonly ILogger<RunServiceImpl> _logger;
     private readonly IStreamProducer<RunStopRequested> _stopProducer;
+    private readonly ILogRepository _logRepository;
+    private readonly IRunStatusCache _statusCache;
     private static readonly ConcurrentDictionary<string, RunState> _runs = new();
     private static readonly ConcurrentDictionary<string, CancellationTokenSource> _runCancellations = new();
 
     public RunServiceImpl(
         ILogger<RunServiceImpl> logger,
-        IStreamProducer<RunStopRequested> stopProducer)
+        IStreamProducer<RunStopRequested> stopProducer,
+        ILogRepository logRepository,
+        IRunStatusCache statusCache)
     {
         _logger = logger;
         _stopProducer = stopProducer;
+        _logRepository = logRepository;
+        _statusCache = statusCache;
     }
 
     public override Task<StartRunResponse> StartRun(StartRunRequest request, ServerCallContext context)
@@ -94,13 +102,39 @@ public class RunServiceImpl : RunService.RunServiceBase
         return new Empty();
     }
 
-    public override Task<RunStatusResponse> GetRunStatus(GetRunStatusRequest request, ServerCallContext context)
+    public override async Task<RunStatusResponse> GetRunStatus(GetRunStatusRequest request, ServerCallContext context)
     {
         _logger.LogInformation("GetRunStatus called for runId: {RunId}", request.RunId);
         
+        // Try to get status from Redis cache first
+        try
+        {
+            var cachedStatus = await _statusCache.GetAsync(request.RunId, context.CancellationToken);
+            if (cachedStatus != null)
+            {
+                _logger.LogDebug("Cache hit for runId: {RunId}", request.RunId);
+                return new RunStatusResponse
+                {
+                    RunId = cachedStatus.RunId,
+                    Status = System.Enum.Parse<RepoRunner.Contracts.RunStatus>(cachedStatus.Status, ignoreCase: true),
+                    PreviewUrl = cachedStatus.PreviewUrl ?? "",
+                    StartedAt = cachedStatus.StartedAt.HasValue ? Timestamp.FromDateTime(cachedStatus.StartedAt.Value) : null,
+                    EndedAt = cachedStatus.EndedAt.HasValue ? Timestamp.FromDateTime(cachedStatus.EndedAt.Value) : null,
+                    ErrorMessage = cachedStatus.ErrorMessage ?? "",
+                    Mode = System.Enum.Parse<RepoRunner.Contracts.RunMode>(cachedStatus.Mode, ignoreCase: true),
+                    PrimaryService = cachedStatus.PrimaryService ?? ""
+                };
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to get status from cache for runId: {RunId}, falling back to in-memory", request.RunId);
+        }
+
+        // Fallback to in-memory store (for MVP/testing)
         if (_runs.TryGetValue(request.RunId, out var state))
         {
-            return Task.FromResult(new RunStatusResponse
+            return new RunStatusResponse
             {
                 RunId = state.RunId,
                 Status = state.Status,
@@ -110,18 +144,51 @@ public class RunServiceImpl : RunService.RunServiceBase
                 ErrorMessage = state.ErrorMessage ?? "",
                 Mode = state.Mode,
                 PrimaryService = state.PrimaryService ?? ""
-            });
+            };
         }
 
         throw new RpcException(new Status(StatusCode.NotFound, $"Run {request.RunId} not found"));
     }
 
-    public override Task StreamLogs(StreamLogsRequest request, IServerStreamWriter<LogEntry> responseStream, ServerCallContext context)
+    public override async Task StreamLogs(StreamLogsRequest request, IServerStreamWriter<LogEntry> responseStream, ServerCallContext context)
     {
-        _logger.LogInformation("StreamLogs called for runId: {RunId}", request.RunId);
-        
-        // MVP skeleton: no actual logs yet
-        throw new RpcException(new Status(StatusCode.Unimplemented, "StreamLogs not yet implemented in MVP skeleton"));
+        _logger.LogInformation("StreamLogs called for runId: {RunId}, source: {Source}, service: {ServiceName}",
+            request.RunId, request.Source, request.ServiceName);
+
+        try
+        {
+            // Map LogSource enum to string for repository query
+            string? sourceFilter = request.Source switch
+            {
+                LogSource.Build => "build",
+                LogSource.Run => "run",
+                _ => null
+            };
+
+            // Stream logs from MongoDB
+            await foreach (var log in _logRepository.GetLogsAsync(
+                request.RunId,
+                sourceFilter,
+                string.IsNullOrEmpty(request.ServiceName) ? null : request.ServiceName,
+                context.CancellationToken))
+            {
+                var logEntry = new LogEntry
+                {
+                    Timestamp = Timestamp.FromDateTime(log.Timestamp),
+                    Source = log.Source == "build" ? LogSource.Build : LogSource.Run,
+                    Line = log.Line
+                };
+
+                await responseStream.WriteAsync(logEntry, context.CancellationToken);
+            }
+
+            _logger.LogInformation("Completed streaming logs for runId: {RunId}", request.RunId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Error streaming logs for runId: {RunId}", request.RunId);
+            throw new RpcException(new Status(StatusCode.Internal, $"Error streaming logs: {ex.Message}"));
+        }
     }
 
     /// <summary>

@@ -1,6 +1,7 @@
 using Builder.Services;
 using Shared.Streams;
 using Shared.Health;
+using Shared.Repositories;
 using RepoRunner.Contracts.Events;
 
 var builder = Host.CreateApplicationBuilder(args);
@@ -39,6 +40,7 @@ builder.Services.AddSingleton<IGitCloner, GitCloner>();
 builder.Services.AddSingleton<IDockerBuilder, DockerBuilder>();
 builder.Services.AddSingleton<IDockerComposeParser, DockerComposeParser>();
 builder.Services.AddSingleton<IBuildLogsRepository, BuildLogsRepository>();
+builder.Services.AddSingleton<ILogRepository, LogRepository>();
 
 // Add health checks
 builder.Services.AddHealthChecks()

@@ -1,4 +1,6 @@
 using Shared.Streams;
+using Shared.Repositories;
+using Shared.Models;
 using RepoRunner.Contracts.Events;
 using Google.Protobuf.WellKnownTypes;
 
@@ -13,6 +15,7 @@ public class BuilderWorker : BackgroundService
     private readonly IGitCloner _gitCloner;
     private readonly IDockerBuilder _dockerBuilder;
     private readonly IBuildLogsRepository _buildLogsRepository;
+    private readonly ILogRepository _logRepository;
     private readonly IConfiguration _configuration;
 
     public BuilderWorker(
@@ -23,6 +26,7 @@ public class BuilderWorker : BackgroundService
         IGitCloner gitCloner,
         IDockerBuilder dockerBuilder,
         IBuildLogsRepository buildLogsRepository,
+        ILogRepository logRepository,
         IConfiguration configuration)
     {
         _logger = logger;
@@ -32,6 +36,7 @@ public class BuilderWorker : BackgroundService
         _gitCloner = gitCloner;
         _dockerBuilder = dockerBuilder;
         _buildLogsRepository = buildLogsRepository;
+        _logRepository = logRepository;
         _configuration = configuration;
     }
 
@@ -81,6 +86,7 @@ public class BuilderWorker : BackgroundService
                 }
 
                 buildLog.Content = $"Successfully cloned {runRequested.RepoUrl}\n";
+                await WriteLogAsync(runRequested.RunId, $"Successfully cloned {runRequested.RepoUrl}", null, stoppingToken);
 
                 // Build based on mode
                 if (runRequested.Mode == RunMode.Dockerfile)
@@ -167,8 +173,9 @@ public class BuilderWorker : BackgroundService
         }
 
         buildLog.Content += $"Found Dockerfile at {dockerfilePath}\n";
+        await WriteLogAsync(runRequested.RunId, $"Found Dockerfile at {dockerfilePath}", null, cancellationToken);
 
-        // Build image
+        // Build Docker image
         var image = await _dockerBuilder.BuildDockerfileAsync(
             runRequested.RunId,
             repoPath,
@@ -287,6 +294,29 @@ public class BuilderWorker : BackgroundService
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Failed to cleanup repository at {Path}", repoPath);
+        }
+    }
+
+    /// <summary>
+    /// Helper to write individual log entries for real-time streaming
+    /// </summary>
+    private async Task WriteLogAsync(string runId, string line, string? serviceName = null, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var logEntry = new Shared.Models.LogEntry
+            {
+                RunId = runId,
+                Source = "build",
+                ServiceName = serviceName,
+                Line = line,
+                Timestamp = DateTime.UtcNow
+            };
+            await _logRepository.AddLogAsync(logEntry, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to write log entry for RunId={RunId}", runId);
         }
     }
 }
