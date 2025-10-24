@@ -18,4 +18,8 @@
     <Protobuf Include="..\..\contracts\events.proto" GrpcServices="None" />
   </ItemGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\..\shared\Shared\Shared.csproj" />
+  </ItemGroup>
+
 </Project>

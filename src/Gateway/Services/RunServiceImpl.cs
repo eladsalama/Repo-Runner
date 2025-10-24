@@ -1,5 +1,7 @@
 using Grpc.Core;
 using RepoRunner.Contracts;
+using RepoRunner.Contracts.Events;
+using Shared.Streams;
 using System.Collections.Concurrent;
 using Google.Protobuf.WellKnownTypes;
 
@@ -12,12 +14,16 @@ namespace Gateway.Services;
 public class RunServiceImpl : RunService.RunServiceBase
 {
     private readonly ILogger<RunServiceImpl> _logger;
+    private readonly IStreamProducer<RunStopRequested> _stopProducer;
     private static readonly ConcurrentDictionary<string, RunState> _runs = new();
     private static readonly ConcurrentDictionary<string, CancellationTokenSource> _runCancellations = new();
 
-    public RunServiceImpl(ILogger<RunServiceImpl> logger)
+    public RunServiceImpl(
+        ILogger<RunServiceImpl> logger,
+        IStreamProducer<RunStopRequested> stopProducer)
     {
         _logger = logger;
+        _stopProducer = stopProducer;
     }
 
     public override Task<StartRunResponse> StartRun(StartRunRequest request, ServerCallContext context)
@@ -53,7 +59,7 @@ public class RunServiceImpl : RunService.RunServiceBase
         });
     }
 
-    public override Task<Empty> StopRun(StopRunRequest request, ServerCallContext context)
+    public override async Task<Empty> StopRun(StopRunRequest request, ServerCallContext context)
     {
         _logger.LogInformation("StopRun called for runId: {RunId}", request.RunId);
         
@@ -66,9 +72,26 @@ public class RunServiceImpl : RunService.RunServiceBase
             {
                 cts.Cancel();
             }
+
+            // Produce RunStopRequested event for Runner to consume
+            try
+            {
+                var stopEvent = new RunStopRequested
+                {
+                    RunId = request.RunId,
+                    Namespace = $"run-{request.RunId}",
+                    RequestedAt = Timestamp.FromDateTime(DateTime.UtcNow)
+                };
+                await _stopProducer.PublishAsync(stopEvent, context.CancellationToken);
+                _logger.LogInformation("Produced RunStopRequested event for runId: {RunId}", request.RunId);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogError(ex, "Failed to produce RunStopRequested event for runId: {RunId}", request.RunId);
+            }
         }
 
-        return Task.FromResult(new Empty());
+        return new Empty();
     }
 
     public override Task<RunStatusResponse> GetRunStatus(GetRunStatusRequest request, ServerCallContext context)
@@ -161,7 +184,7 @@ internal class RunState
     public string RunId { get; set; } = "";
     public string RepoUrl { get; set; } = "";
     public string Branch { get; set; } = "";
-    public RunMode Mode { get; set; }
+    public RepoRunner.Contracts.RunMode Mode { get; set; }
     public string ComposePath { get; set; } = "";
     public string? PrimaryService { get; set; }
     public RunStatus Status { get; set; }

@@ -15,6 +15,7 @@ public class Run
     public List<string> ImageRefs { get; set; } = new(); // For COMPOSE mode
     public List<int> Ports { get; set; } = new();
     public string? PreviewUrl { get; set; }
+    public string? NamespaceName { get; set; } // K8s namespace where the run is deployed
     public string? LogsRef { get; set; }
     public string? ErrorMessage { get; set; }
     public DateTime CreatedAt { get; set; } = DateTime.UtcNow;

@@ -38,7 +38,13 @@ builder.Services.AddStreamConsumer<BuildSucceeded>(
     StreamConfig.Groups.Runner,
     $"runner-{hostname}");
 
-// Add stream producer for RunSucceeded/Failed events
+// Add stream consumer for RunStopRequested events
+builder.Services.AddStreamConsumer<RunStopRequested>(
+    StreamConfig.Streams.RepoRuns,
+    StreamConfig.Groups.Runner,
+    $"runner-{hostname}");
+
+// Add stream producers for RunSucceeded/RunFailed events
 builder.Services.AddStreamProducer<RunSucceeded>(StreamConfig.Streams.RepoRuns);
 builder.Services.AddStreamProducer<RunFailed>(StreamConfig.Streams.RepoRuns);
 
@@ -50,12 +56,18 @@ builder.Services.AddSingleton<IRunRepository, RunRepository>();
 // Add health checks
 builder.Services.AddHealthChecks()
     .AddStreamLagCheck<BuildSucceeded>(
-        "runner-stream-lag",
+        "runner-buildsucceeded-lag",
+        StreamConfig.Streams.RepoRuns,
+        warningThreshold: 50,
+        unhealthyThreshold: 200)
+    .AddStreamLagCheck<RunStopRequested>(
+        "runner-stoproequested-lag",
         StreamConfig.Streams.RepoRuns,
         warningThreshold: 50,
         unhealthyThreshold: 200);
 
 builder.Services.AddHostedService<RunnerWorker>();
+builder.Services.AddHostedService<StopRunnerWorker>();
 builder.Services.AddHostedService<NamespaceCleanupService>();
 
 var host = builder.Build();

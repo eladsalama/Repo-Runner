@@ -61,6 +61,12 @@ message RunFailed {
   google.protobuf.Timestamp failed_at = 3;
 }
 
+message RunStopRequested {
+  string run_id = 1;
+  string namespace = 2;
+  google.protobuf.Timestamp requested_at = 3;
+}
+
 message IndexingComplete {
   string run_id = 1;
   string repo_id = 2;

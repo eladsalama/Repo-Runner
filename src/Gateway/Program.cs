@@ -1,6 +1,16 @@
 using Gateway.Services;
+using Shared.Streams;
+using RepoRunner.Contracts.Events;
 
 var builder = WebApplication.CreateBuilder(args);
+
+// Add Redis Streams
+var redisConnection = builder.Configuration.GetValue<string>("Redis:ConnectionString") 
+    ?? "localhost:6379";
+builder.Services.AddRedisStreams(redisConnection);
+
+// Add stream producer for RunStopRequested events
+builder.Services.AddStreamProducer<RunStopRequested>(StreamConfig.Streams.RepoRuns);
 
 // Add gRPC services
 builder.Services.AddGrpc();
