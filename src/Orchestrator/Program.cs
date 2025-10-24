@@ -13,6 +13,9 @@ builder.Services.AddRedisStreams(redisConnection);
 // Add stream producer for RunRequested events
 builder.Services.AddStreamProducer<RunRequested>(StreamConfig.Streams.RepoRuns);
 
+// Add stream producer for RunStopRequested events
+builder.Services.AddStreamProducer<RunStopRequested>(StreamConfig.Streams.RepoRuns);
+
 // Add stream consumer for BuildSucceeded/BuildFailed events
 var hostname = Environment.MachineName;
 builder.Services.AddStreamConsumer<BuildSucceeded>(
@@ -39,6 +42,7 @@ builder.Services.AddSingleton<MongoDB.Driver.IMongoDatabase>(sp =>
 
 // Add Orchestrator services
 builder.Services.AddSingleton<IRunRepository, RunRepository>();
+builder.Services.AddSingleton<IStopRunService, StopRunService>();
 
 // Add health checks
 builder.Services.AddHealthChecks()
