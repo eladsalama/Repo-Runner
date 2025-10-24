@@ -1,4 +1,5 @@
 using Shared.Streams;
+using Shared.Cache;
 using RepoRunner.Contracts.Events;
 
 namespace Orchestrator.Services;
@@ -9,17 +10,20 @@ public class OrchestratorWorker : BackgroundService
     private readonly IStreamConsumer<BuildSucceeded> _buildSucceededConsumer;
     private readonly IStreamConsumer<BuildFailed> _buildFailedConsumer;
     private readonly IRunRepository _runRepository;
+    private readonly IRunStatusCache _statusCache;
 
     public OrchestratorWorker(
         ILogger<OrchestratorWorker> logger,
         IStreamConsumer<BuildSucceeded> buildSucceededConsumer,
         IStreamConsumer<BuildFailed> buildFailedConsumer,
-        IRunRepository runRepository)
+        IRunRepository runRepository,
+        IRunStatusCache statusCache)
     {
         _logger = logger;
         _buildSucceededConsumer = buildSucceededConsumer;
         _buildFailedConsumer = buildFailedConsumer;
         _runRepository = runRepository;
+        _statusCache = statusCache;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -69,8 +73,8 @@ public class OrchestratorWorker : BackgroundService
                     await _runRepository.UpdateAsync(run, stoppingToken);
                     _logger.LogInformation("Updated run {RunId} with build results", buildSucceeded.RunId);
 
-                    // TODO: Produce RunSucceeded event for Runner to consume
-                    // For now, we'll wait for Milestone 6 (Runner) implementation
+                    // Update cache
+                    await UpdateCacheAsync(run, stoppingToken);
                 }
                 catch (Exception ex)
                 {
@@ -107,6 +111,9 @@ public class OrchestratorWorker : BackgroundService
 
                     await _runRepository.UpdateAsync(run, stoppingToken);
                     _logger.LogInformation("Updated run {RunId} with build failure", buildFailed.RunId);
+
+                    // Update cache
+                    await UpdateCacheAsync(run, stoppingToken);
                 }
                 catch (Exception ex)
                 {
@@ -119,5 +126,28 @@ public class OrchestratorWorker : BackgroundService
 
         // Wait for both consumers to complete (they run until cancellation)
         await Task.WhenAll(buildSucceededTask, buildFailedTask);
+    }
+
+    private async Task UpdateCacheAsync(Models.Run run, CancellationToken cancellationToken)
+    {
+        try
+        {
+            var cacheEntry = new RunStatusCacheEntry
+            {
+                RunId = run.Id,
+                Status = run.Status,
+                PreviewUrl = run.PreviewUrl,
+                StartedAt = run.StartedAt,
+                EndedAt = run.CompletedAt,
+                ErrorMessage = run.ErrorMessage,
+                Mode = run.Mode.ToString(),
+                PrimaryService = run.PrimaryService
+            };
+            await _statusCache.SetAsync(run.Id, cacheEntry, cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to update cache for RunId={RunId}", run.Id);
+        }
     }
 }

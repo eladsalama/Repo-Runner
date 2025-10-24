@@ -120,6 +120,27 @@ const ERROR_FONT_SIZE = '12px';                 // Error text size
 const ERROR_BORDER_RADIUS = '6px';              // Error corners
 const ERROR_MARGIN_TOP = '12px';                // Space above error
 
+// Log Display
+const LOG_CONTAINER_BG_COLOR = '#0d1117';       // Log container background
+const LOG_CONTAINER_BORDER_COLOR = '#3d444d';   // Log container border
+const LOG_CONTAINER_HEIGHT = '200px';           // Log container height
+const LOG_CONTAINER_MARGIN_TOP = '12px';        // Space above logs
+const LOG_CONTAINER_BORDER_RADIUS = '6px';      // Log container corners
+const LOG_HEADER_BG_COLOR = '#151b23';          // Log header background
+const LOG_HEADER_PADDING = '8px 12px';          // Log header padding
+const LOG_HEADER_FONT_SIZE = '12px';            // Log header text size
+const LOG_HEADER_COLOR = '#ffffffff';           // Log header text color
+const LOG_CONTENT_PADDING = '8px';              // Log content padding
+const LOG_CONTENT_FONT_SIZE = '11px';           // Log line text size
+const LOG_CONTENT_FONT_FAMILY = 'ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace'; // Log font
+const LOG_LINE_COLOR = '#e6edf3';               // Log line text color
+const LOG_LINE_HEIGHT = '1.4';                  // Log line height
+const LOG_TAB_BG_COLOR = '#151b23';             // Log tab background
+const LOG_TAB_ACTIVE_BG_COLOR = '#0d1117';      // Active log tab background
+const LOG_TAB_BORDER_COLOR = '#3d444d';         // Log tab border
+const LOG_TAB_PADDING = '6px 12px';             // Log tab padding
+const LOG_TAB_FONT_SIZE = '12px';               // Log tab text size
+
 // Performance Settings
 const RETRY_DELAY_FAST = 50;                    // Fast retry delay (ms)
 const RETRY_DELAY_SLOW = 200;                   // Slow retry delay (ms)
@@ -394,6 +415,41 @@ function injectRunButton(detection: RepoDetection): void {
         font-size: ${ERROR_FONT_SIZE};
         color: ${ERROR_TEXT_COLOR};
       "></div>
+      <div id="reporunner-logs-container" style="display: none; margin-top: ${LOG_CONTAINER_MARGIN_TOP};">
+        <div id="reporunner-logs-tabs" style="
+          display: flex;
+          gap: 4px;
+          margin-bottom: 8px;
+        "></div>
+        <div style="
+          background-color: ${LOG_CONTAINER_BG_COLOR};
+          border: 1px solid ${LOG_CONTAINER_BORDER_COLOR};
+          border-radius: ${LOG_CONTAINER_BORDER_RADIUS};
+          overflow: hidden;
+        ">
+          <div style="
+            background-color: ${LOG_HEADER_BG_COLOR};
+            padding: ${LOG_HEADER_PADDING};
+            font-size: ${LOG_HEADER_FONT_SIZE};
+            font-weight: 600;
+            color: ${LOG_HEADER_COLOR};
+            border-bottom: 1px solid ${LOG_CONTAINER_BORDER_COLOR};
+          ">
+            <span id="reporunner-logs-header">Logs</span>
+          </div>
+          <div id="reporunner-logs-content" style="
+            height: ${LOG_CONTAINER_HEIGHT};
+            overflow-y: auto;
+            padding: ${LOG_CONTENT_PADDING};
+            font-family: ${LOG_CONTENT_FONT_FAMILY};
+            font-size: ${LOG_CONTENT_FONT_SIZE};
+            line-height: ${LOG_LINE_HEIGHT};
+            color: ${LOG_LINE_COLOR};
+            white-space: pre-wrap;
+            word-wrap: break-word;
+          "></div>
+        </div>
+      </div>
     </div>
   `;
 
@@ -511,6 +567,20 @@ async function startRun(detection: RepoDetection, repoUrl: string | null): Promi
     startBtn.style.display = 'none';
     stopBtn.style.display = 'block';
 
+    // Show logs container and start streaming logs
+    const logsContainer = document.getElementById('reporunner-logs-container')!;
+    logsContainer.style.display = 'block';
+    
+    // Create tabs for COMPOSE mode
+    if (detection.mode === 'COMPOSE') {
+      createLogTabs(detection, primaryServiceSelect?.value);
+    }
+    
+    // Start streaming logs
+    if (currentRunId) {
+      streamLogs(currentRunId, null); // Start with all logs (no service filter)
+    }
+
     // Start polling status
     pollStatus(statusEl, statusDot, statusText, startBtn, stopBtn);
 
@@ -606,14 +676,180 @@ function pollStatus(statusEl: HTMLElement, statusDot: HTMLElement, statusText: H
 }
 
 /**
+ * Create log tabs for COMPOSE mode
+ */
+let currentLogService: string | null = null;
+
+function createLogTabs(detection: RepoDetection, primaryService: string | undefined): void {
+  const tabsContainer = document.getElementById('reporunner-logs-tabs')!;
+  tabsContainer.innerHTML = '';
+
+  // For COMPOSE mode, create tabs for build, run-all, and per-service
+  if (detection.mode === 'COMPOSE') {
+    const tabs = [
+      { label: 'All', value: null },
+      { label: 'Build', value: 'build' },
+      { label: 'Run', value: 'run' }
+    ];
+
+    // Add primary service tab if available
+    if (primaryService) {
+      tabs.push({ label: primaryService, value: `service:${primaryService}` });
+    }
+
+    tabs.forEach((tab, index) => {
+      const button = document.createElement('button');
+      button.textContent = tab.label;
+      button.style.cssText = `
+        padding: ${LOG_TAB_PADDING};
+        font-size: ${LOG_TAB_FONT_SIZE};
+        background-color: ${index === 0 ? LOG_TAB_ACTIVE_BG_COLOR : LOG_TAB_BG_COLOR};
+        border: 1px solid ${LOG_TAB_BORDER_COLOR};
+        border-radius: 6px;
+        color: ${LOG_HEADER_COLOR};
+        cursor: pointer;
+        transition: background-color 0.2s;
+      `;
+
+      button.addEventListener('click', () => {
+        // Update active tab
+        tabsContainer.querySelectorAll('button').forEach(btn => {
+          (btn as HTMLElement).style.backgroundColor = LOG_TAB_BG_COLOR;
+        });
+        button.style.backgroundColor = LOG_TAB_ACTIVE_BG_COLOR;
+
+        // Re-stream logs with filter
+        if (currentRunId) {
+          const logsContent = document.getElementById('reporunner-logs-content')!;
+          logsContent.innerHTML = '';
+          
+          if (tab.value?.startsWith('service:')) {
+            const serviceName = tab.value.substring(8);
+            streamLogs(currentRunId, serviceName);
+          } else {
+            streamLogs(currentRunId, null);
+          }
+        }
+      });
+
+      tabsContainer.appendChild(button);
+    });
+  } else {
+    // For DOCKERFILE mode, just show Build and Run tabs
+    const tabs = [
+      { label: 'All', value: null },
+      { label: 'Build', value: 'build' },
+      { label: 'Run', value: 'run' }
+    ];
+
+    tabs.forEach((tab, index) => {
+      const button = document.createElement('button');
+      button.textContent = tab.label;
+      button.style.cssText = `
+        padding: ${LOG_TAB_PADDING};
+        font-size: ${LOG_TAB_FONT_SIZE};
+        background-color: ${index === 0 ? LOG_TAB_ACTIVE_BG_COLOR : LOG_TAB_BG_COLOR};
+        border: 1px solid ${LOG_TAB_BORDER_COLOR};
+        border-radius: 6px;
+        color: ${LOG_HEADER_COLOR};
+        cursor: pointer;
+        transition: background-color 0.2s;
+      `;
+
+      button.addEventListener('click', () => {
+        // Update active tab
+        tabsContainer.querySelectorAll('button').forEach(btn => {
+          (btn as HTMLElement).style.backgroundColor = LOG_TAB_BG_COLOR;
+        });
+        button.style.backgroundColor = LOG_TAB_ACTIVE_BG_COLOR;
+
+        // Re-stream logs
+        if (currentRunId) {
+          const logsContent = document.getElementById('reporunner-logs-content')!;
+          logsContent.innerHTML = '';
+          streamLogs(currentRunId, null);
+        }
+      });
+
+      tabsContainer.appendChild(button);
+    });
+  }
+}
+
+/**
+ * Stream logs from Gateway using REST polling (gRPC-Web streaming deferred)
+ * Note: This is a simplified REST-based polling approach for MVP
+ * Real implementation will use gRPC-Web StreamLogs with server-streaming
+ */
+async function streamLogs(runId: string, serviceName: string | null): Promise<void> {
+  currentLogService = serviceName;
+  const logsContent = document.getElementById('reporunner-logs-content')!;
+  
+  // Clear existing logs
+  logsContent.textContent = 'Loading logs...\n';
+
+  // Poll for logs every 2 seconds (simplified approach for MVP)
+  // Real implementation: Use gRPC-Web StreamLogs with server-streaming
+  let lastLogCount = 0;
+  
+  const logPollInterval = setInterval(async () => {
+    if (!currentRunId || currentRunId !== runId) {
+      clearInterval(logPollInterval);
+      return;
+    }
+
+    try {
+      // Note: This REST endpoint is not yet implemented in Gateway
+      // For now, just show placeholder text
+      // Real implementation will call StreamLogs gRPC method
+      const url = serviceName 
+        ? `${GATEWAY_URL}/api/runs/${runId}/logs?service=${serviceName}`
+        : `${GATEWAY_URL}/api/runs/${runId}/logs`;
+      
+      // Placeholder: In real implementation, this will fetch from Gateway REST endpoint
+      // or use gRPC-Web StreamLogs
+      // For MVP, we show a message indicating logs are being collected
+      if (lastLogCount === 0) {
+        logsContent.textContent = `📝 Logs are being collected by Runner and Builder services.\n\n` +
+          `Once the gRPC-Web bridge is set up, logs will stream here in real-time.\n\n` +
+          `Check Gateway, Builder, and Runner service logs for actual output.\n\n` +
+          `Run ID: ${runId}\n` +
+          (serviceName ? `Service: ${serviceName}\n` : '');
+        lastLogCount = 1;
+      }
+
+    } catch (error) {
+      console.error('Log fetch error:', error);
+      if (lastLogCount === 0) {
+        logsContent.textContent = `⚠️  Unable to fetch logs. Check that Gateway is running.\n\n` +
+          `Error: ${(error as Error).message}`;
+        lastLogCount = 1;
+      }
+    }
+  }, 2000);
+
+  // Stop log polling when run completes
+  setTimeout(() => {
+    clearInterval(logPollInterval);
+  }, 300000); // Stop after 5 minutes
+}
+
+/**
  * Reset buttons to initial state
  */
 function resetButtons(): void {
   const startBtn = document.getElementById('reporunner-start-btn')!;
   const stopBtn = document.getElementById('reporunner-stop-btn')!;
+  const logsContainer = document.getElementById('reporunner-logs-container')!;
+  
   startBtn.style.display = 'block';
   stopBtn.style.display = 'none';
   (startBtn as HTMLButtonElement).disabled = false;
+  
+  // Hide logs when run completes
+  logsContainer.style.display = 'none';
+  currentRunId = null;
+  currentLogService = null;
 }
 
 // Main execution - inject immediately and retry if needed

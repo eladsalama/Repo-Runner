@@ -1,6 +1,7 @@
 using Orchestrator.Services;
 using Shared.Streams;
 using Shared.Health;
+using Shared.Cache;
 using RepoRunner.Contracts.Events;
 
 var builder = Host.CreateApplicationBuilder(args);
@@ -9,6 +10,9 @@ var builder = Host.CreateApplicationBuilder(args);
 var redisConnection = builder.Configuration.GetValue<string>("Redis:ConnectionString") 
     ?? "localhost:6379";
 builder.Services.AddRedisStreams(redisConnection);
+
+// Add Run Status Cache
+builder.Services.AddSingleton<IRunStatusCache, RunStatusCache>();
 
 // Add stream producer for RunRequested events
 builder.Services.AddStreamProducer<RunRequested>(StreamConfig.Streams.RepoRuns);

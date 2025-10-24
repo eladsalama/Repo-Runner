@@ -1,6 +1,7 @@
 using Runner.Services;
 using Shared.Streams;
 using Shared.Health;
+using Shared.Repositories;
 using RepoRunner.Contracts.Events;
 using k8s;
 
@@ -52,6 +53,8 @@ builder.Services.AddStreamProducer<RunFailed>(StreamConfig.Streams.RepoRuns);
 builder.Services.AddSingleton<IKubernetesResourceGenerator, KubernetesResourceGenerator>();
 builder.Services.AddSingleton<IKubernetesDeployer, KubernetesDeployer>();
 builder.Services.AddSingleton<IRunRepository, RunRepository>();
+builder.Services.AddSingleton<ILogRepository, LogRepository>();
+builder.Services.AddSingleton<IPodLogTailer, PodLogTailer>();
 
 // Add health checks
 builder.Services.AddHealthChecks()

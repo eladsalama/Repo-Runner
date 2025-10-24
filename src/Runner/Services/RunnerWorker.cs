@@ -13,6 +13,7 @@ public class RunnerWorker : BackgroundService
     private readonly IKubernetesResourceGenerator _resourceGenerator;
     private readonly IKubernetesDeployer _deployer;
     private readonly IRunRepository _runRepository;
+    private readonly IPodLogTailer _podLogTailer;
 
     public RunnerWorker(
         ILogger<RunnerWorker> logger,
@@ -21,7 +22,8 @@ public class RunnerWorker : BackgroundService
         IStreamProducer<RunFailed> runFailedProducer,
         IKubernetesResourceGenerator resourceGenerator,
         IKubernetesDeployer deployer,
-        IRunRepository runRepository)
+        IRunRepository runRepository,
+        IPodLogTailer podLogTailer)
     {
         _logger = logger;
         _consumer = consumer;
@@ -30,6 +32,7 @@ public class RunnerWorker : BackgroundService
         _resourceGenerator = resourceGenerator;
         _deployer = deployer;
         _runRepository = runRepository;
+        _podLogTailer = podLogTailer;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -112,6 +115,19 @@ public class RunnerWorker : BackgroundService
                 _logger.LogInformation(
                     "Successfully deployed RunId={RunId} to namespace={Namespace}, PreviewURL={PreviewUrl}",
                     buildSucceeded.RunId, namespaceName, previewUrl);
+
+                // Start tailing logs in background (don't await)
+                _ = Task.Run(async () =>
+                {
+                    try
+                    {
+                        await _podLogTailer.TailLogsAsync(buildSucceeded.RunId, namespaceName, null, stoppingToken);
+                    }
+                    catch (Exception ex)
+                    {
+                        _logger.LogError(ex, "Error tailing logs for RunId={RunId}", buildSucceeded.RunId);
+                    }
+                }, stoppingToken);
             }
             catch (Exception ex)
             {
@@ -142,9 +158,6 @@ public class RunnerWorker : BackgroundService
                 {
                     _logger.LogError(innerEx, "Failed to handle deployment failure for RunId={RunId}", buildSucceeded.RunId);
                 }
-
-                // Still acknowledge to prevent infinite retries
-                return true;
             }
             
             return true; // Acknowledge
