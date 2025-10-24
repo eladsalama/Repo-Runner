@@ -19,6 +19,7 @@ public class StreamConfig
     /// </summary>
     public static class Groups
     {
+        public const string Orchestrator = "group:orchestrator";
         public const string Builder = "group:builder";
         public const string Runner = "group:runner";
         public const string Indexer = "group:indexer";

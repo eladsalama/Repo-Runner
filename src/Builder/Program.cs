@@ -10,6 +10,19 @@ var redisConnection = builder.Configuration.GetValue<string>("Redis:ConnectionSt
     ?? "localhost:6379";
 builder.Services.AddRedisStreams(redisConnection);
 
+// Add MongoDB
+var mongoConnection = builder.Configuration.GetValue<string>("MongoDB:ConnectionString")
+    ?? "mongodb://localhost:27017";
+var mongoDatabase = builder.Configuration.GetValue<string>("MongoDB:Database")
+    ?? "reporunner";
+builder.Services.AddSingleton<MongoDB.Driver.IMongoClient>(sp =>
+    new MongoDB.Driver.MongoClient(mongoConnection));
+builder.Services.AddSingleton<MongoDB.Driver.IMongoDatabase>(sp =>
+{
+    var client = sp.GetRequiredService<MongoDB.Driver.IMongoClient>();
+    return client.GetDatabase(mongoDatabase);
+});
+
 // Add stream consumer for RunRequested events
 var hostname = Environment.MachineName;
 builder.Services.AddStreamConsumer<RunRequested>(
@@ -20,6 +33,12 @@ builder.Services.AddStreamConsumer<RunRequested>(
 // Add stream producer for BuildSucceeded/Failed events
 builder.Services.AddStreamProducer<BuildSucceeded>(StreamConfig.Streams.RepoRuns);
 builder.Services.AddStreamProducer<BuildFailed>(StreamConfig.Streams.RepoRuns);
+
+// Add Builder services
+builder.Services.AddSingleton<IGitCloner, GitCloner>();
+builder.Services.AddSingleton<IDockerBuilder, DockerBuilder>();
+builder.Services.AddSingleton<IDockerComposeParser, DockerComposeParser>();
+builder.Services.AddSingleton<IBuildLogsRepository, BuildLogsRepository>();
 
 // Add health checks
 builder.Services.AddHealthChecks()
