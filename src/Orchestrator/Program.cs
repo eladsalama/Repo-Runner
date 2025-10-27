@@ -2,7 +2,18 @@ using Orchestrator.Services;
 using Shared.Streams;
 using Shared.Health;
 using Shared.Cache;
+using Shared.Repositories;
 using RepoRunner.Contracts.Events;
+using MongoDB.Driver;
+using MongoDB.Bson.Serialization;
+using MongoDB.Bson.Serialization.Conventions;
+
+// Configure MongoDB to serialize enums as strings globally
+var pack = new ConventionPack
+{
+    new EnumRepresentationConvention(MongoDB.Bson.BsonType.String)
+};
+ConventionRegistry.Register("EnumStringConvention", pack, t => true);
 
 var builder = Host.CreateApplicationBuilder(args);
 
@@ -14,22 +25,37 @@ builder.Services.AddRedisStreams(redisConnection);
 // Add Run Status Cache
 builder.Services.AddSingleton<IRunStatusCache, RunStatusCache>();
 
-// Add stream producer for RunRequested events
-builder.Services.AddStreamProducer<RunRequested>(StreamConfig.Streams.RepoRuns);
-
-// Add stream producer for RunStopRequested events
-builder.Services.AddStreamProducer<RunStopRequested>(StreamConfig.Streams.RepoRuns);
-
-// Add stream consumer for BuildSucceeded/BuildFailed events
 var hostname = Environment.MachineName;
+
+// Add stream consumer for RunRequested events (to create run records)
+builder.Services.AddStreamConsumer<RunRequested>(
+    StreamConfig.Streams.RepoRuns,
+    $"{StreamConfig.Groups.Orchestrator}:runrequested",
+    $"orchestrator-runrequested-{hostname}");
+
+// Add stream consumer for BuildSucceeded/BuildFailed/BuildProgress events
 builder.Services.AddStreamConsumer<BuildSucceeded>(
     StreamConfig.Streams.RepoRuns,
-    StreamConfig.Groups.Orchestrator,
-    $"orchestrator-{hostname}");
+    $"{StreamConfig.Groups.Orchestrator}:buildsucceeded",
+    $"orchestrator-buildsucceeded-{hostname}");
 builder.Services.AddStreamConsumer<BuildFailed>(
     StreamConfig.Streams.RepoRuns,
-    StreamConfig.Groups.Orchestrator,
-    $"orchestrator-{hostname}");
+    $"{StreamConfig.Groups.Orchestrator}:buildfailed",
+    $"orchestrator-buildfailed-{hostname}");
+builder.Services.AddStreamConsumer<BuildProgress>(
+    StreamConfig.Streams.RepoRuns,
+    $"{StreamConfig.Groups.Orchestrator}:buildprogress",
+    $"orchestrator-buildprogress-{hostname}");
+
+// Add stream consumer for RunSucceeded/RunFailed events
+builder.Services.AddStreamConsumer<RunSucceeded>(
+    StreamConfig.Streams.RepoRuns,
+    $"{StreamConfig.Groups.Orchestrator}:runsucceeded",
+    $"orchestrator-runsucceeded-{hostname}");
+builder.Services.AddStreamConsumer<RunFailed>(
+    StreamConfig.Streams.RepoRuns,
+    $"{StreamConfig.Groups.Orchestrator}:runfailed",
+    $"orchestrator-runfailed-{hostname}");
 
 // Add MongoDB
 var mongoConnection = builder.Configuration.GetValue<string>("MongoDB:ConnectionString")
@@ -46,7 +72,6 @@ builder.Services.AddSingleton<MongoDB.Driver.IMongoDatabase>(sp =>
 
 // Add Orchestrator services
 builder.Services.AddSingleton<IRunRepository, RunRepository>();
-builder.Services.AddSingleton<IStopRunService, StopRunService>();
 
 // Add health checks
 builder.Services.AddHealthChecks()

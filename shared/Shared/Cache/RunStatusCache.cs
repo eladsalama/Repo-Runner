@@ -58,7 +58,7 @@ public class RunStatusCache : IRunStatusCache
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to get cached run status for RunId={RunId}", runId);
+            _logger.LogError(ex, "Exception in GetAsync for RunId={RunId}, Key=run:{RunId}:status. Exception type: {ExType}, Message: {ExMessage}", runId, runId, ex.GetType().Name, ex.Message);
             return null;
         }
     }
@@ -91,4 +91,5 @@ public class RunStatusCacheEntry
     public string? ErrorMessage { get; set; }
     public string Mode { get; set; } = string.Empty;
     public string? PrimaryService { get; set; }
+    public string? BuildProgress { get; set; }  // e.g., "[3/6]" for build progress
 }

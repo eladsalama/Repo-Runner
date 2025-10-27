@@ -1,0 +1,146 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Start All Services",
+      "dependsOn": [
+        "Start Gateway",
+        "Start Orchestrator",
+        "Start Builder",
+        "Start Runner"
+      ],
+      "problemMatcher": []
+    },
+    {
+      "label": "Start Gateway",
+      "type": "shell",
+      "command": "$env:KUBECONFIG='${workspaceFolder}\\infra\\terraform\\kubeconfig'; dotnet run -c Release --no-build",
+      "options": {
+        "cwd": "${workspaceFolder}/src/Gateway"
+      },
+      "isBackground": true,
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": false,
+        "panel": "dedicated",
+        "showReuseMessage": false,
+        "clear": false,
+        "group": "services"
+      },
+      "problemMatcher": {
+        "pattern": {
+          "regexp": "^(.*)$",
+          "file": 1,
+          "location": 2,
+          "message": 3
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "^.*Building.*",
+          "endsPattern": "^.*Application started.*|^.*Now listening on.*"
+        }
+      }
+    },
+    {
+      "label": "Start Orchestrator",
+      "type": "shell",
+      "command": "$env:KUBECONFIG='${workspaceFolder}\\infra\\terraform\\kubeconfig'; dotnet run -c Release --no-build",
+      "options": {
+        "cwd": "${workspaceFolder}/src/Orchestrator"
+      },
+      "isBackground": true,
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": false,
+        "panel": "dedicated",
+        "showReuseMessage": false,
+        "clear": false,
+        "group": "services"
+      },
+      "problemMatcher": {
+        "pattern": {
+          "regexp": "^(.*)$",
+          "file": 1,
+          "location": 2,
+          "message": 3
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "^.*Building.*",
+          "endsPattern": "^.*Application started.*|^.*Now listening on.*"
+        }
+      }
+    },
+    {
+      "label": "Start Builder",
+      "type": "shell",
+      "command": "$env:KUBECONFIG='${workspaceFolder}\\infra\\terraform\\kubeconfig'; dotnet run -c Release --no-build",
+      "options": {
+        "cwd": "${workspaceFolder}/src/Builder"
+      },
+      "isBackground": true,
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": false,
+        "panel": "dedicated",
+        "showReuseMessage": false,
+        "clear": false,
+        "group": "services"
+      },
+      "problemMatcher": {
+        "pattern": {
+          "regexp": "^(.*)$",
+          "file": 1,
+          "location": 2,
+          "message": 3
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "^.*Building.*",
+          "endsPattern": "^.*Application started.*|^.*Now listening on.*"
+        }
+      }
+    },
+    {
+      "label": "Start Runner",
+      "type": "shell",
+      "command": "$env:KUBECONFIG='${workspaceFolder}\\infra\\terraform\\kubeconfig'; $env:DOTNET_SYSTEM_NET_HTTP_USESOCKETSHTTPHANDLER='0'; dotnet run -c Release --no-build",
+      "options": {
+        "cwd": "${workspaceFolder}/src/Runner"
+      },
+      "isBackground": true,
+      "presentation": {
+        "echo": true,
+        "reveal": "always",
+        "focus": false,
+        "panel": "dedicated",
+        "showReuseMessage": false,
+        "clear": false,
+        "group": "services"
+      },
+      "problemMatcher": {
+        "pattern": {
+          "regexp": "^(.*)$",
+          "file": 1,
+          "location": 2,
+          "message": 3
+        },
+        "background": {
+          "activeOnStart": true,
+          "beginsPattern": "^.*Building.*",
+          "endsPattern": "^.*Application started.*|^.*Now listening on.*"
+        }
+      }
+    },
+    {
+      "label": "Stop All Services",
+      "type": "shell",
+      "command": "echo",
+      "args": ["Press Ctrl+C in each terminal to stop services"],
+      "problemMatcher": []
+    }
+  ]
+}

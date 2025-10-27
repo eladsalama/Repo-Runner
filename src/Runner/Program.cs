@@ -4,6 +4,16 @@ using Shared.Health;
 using Shared.Repositories;
 using RepoRunner.Contracts.Events;
 using k8s;
+using MongoDB.Driver;
+using MongoDB.Bson.Serialization;
+using MongoDB.Bson.Serialization.Conventions;
+
+// Configure MongoDB to serialize enums as strings globally
+var pack = new ConventionPack
+{
+    new EnumRepresentationConvention(MongoDB.Bson.BsonType.String)
+};
+ConventionRegistry.Register("EnumStringConvention", pack, t => true);
 
 var builder = Host.CreateApplicationBuilder(args);
 
@@ -29,27 +39,35 @@ builder.Services.AddSingleton<MongoDB.Driver.IMongoDatabase>(sp =>
 builder.Services.AddSingleton<IKubernetes>(sp =>
 {
     var config = KubernetesClientConfiguration.BuildDefaultConfig();
-    return new Kubernetes(config);
+    // Skip SSL validation for local kind cluster (Windows compatibility)
+    config.SkipTlsVerify = true;
+    
+    // Windows fix: Use custom DelegatingHandler for SSL bypass
+    var handler = new Runner.SslBypassHandler();
+    
+    return new Kubernetes(config, handler);
 });
 
 // Add stream consumer for BuildSucceeded events
 var hostname = Environment.MachineName;
 builder.Services.AddStreamConsumer<BuildSucceeded>(
     StreamConfig.Streams.RepoRuns,
-    StreamConfig.Groups.Runner,
+    $"{StreamConfig.Groups.Runner}:buildsucceeded",
     $"runner-{hostname}");
 
 // Add stream consumer for RunStopRequested events
 builder.Services.AddStreamConsumer<RunStopRequested>(
     StreamConfig.Streams.RepoRuns,
-    StreamConfig.Groups.Runner,
+    $"{StreamConfig.Groups.Runner}:runstoprequested",
     $"runner-{hostname}");
 
 // Add stream producers for RunSucceeded/RunFailed events
 builder.Services.AddStreamProducer<RunSucceeded>(StreamConfig.Streams.RepoRuns);
 builder.Services.AddStreamProducer<RunFailed>(StreamConfig.Streams.RepoRuns);
+builder.Services.AddStreamProducer<BuildProgress>(StreamConfig.Streams.RepoRuns);
 
 // Add Runner services
+builder.Services.AddSingleton<PortForwardManager>();
 builder.Services.AddSingleton<IKubernetesResourceGenerator, KubernetesResourceGenerator>();
 builder.Services.AddSingleton<IKubernetesDeployer, KubernetesDeployer>();
 builder.Services.AddSingleton<IRunRepository, RunRepository>();

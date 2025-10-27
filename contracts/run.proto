@@ -55,6 +55,7 @@ message RunStatusResponse {
   string error_message = 6;
   RunMode mode = 7;
   string primary_service = 8;
+  string build_progress = 9; // e.g., "[3/6]" for build progress display
 }
 
 message StreamLogsRequest {

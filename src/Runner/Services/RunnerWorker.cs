@@ -1,4 +1,5 @@
 using Shared.Streams;
+using Shared.Repositories;
 using RepoRunner.Contracts.Events;
 using Google.Protobuf.WellKnownTypes;
 
@@ -10,6 +11,7 @@ public class RunnerWorker : BackgroundService
     private readonly IStreamConsumer<BuildSucceeded> _consumer;
     private readonly IStreamProducer<RunSucceeded> _runSucceededProducer;
     private readonly IStreamProducer<RunFailed> _runFailedProducer;
+    private readonly IStreamProducer<BuildProgress> _buildProgressProducer;
     private readonly IKubernetesResourceGenerator _resourceGenerator;
     private readonly IKubernetesDeployer _deployer;
     private readonly IRunRepository _runRepository;
@@ -20,6 +22,7 @@ public class RunnerWorker : BackgroundService
         IStreamConsumer<BuildSucceeded> consumer,
         IStreamProducer<RunSucceeded> runSucceededProducer,
         IStreamProducer<RunFailed> runFailedProducer,
+        IStreamProducer<BuildProgress> buildProgressProducer,
         IKubernetesResourceGenerator resourceGenerator,
         IKubernetesDeployer deployer,
         IRunRepository runRepository,
@@ -29,6 +32,7 @@ public class RunnerWorker : BackgroundService
         _consumer = consumer;
         _runSucceededProducer = runSucceededProducer;
         _runFailedProducer = runFailedProducer;
+        _buildProgressProducer = buildProgressProducer;
         _resourceGenerator = resourceGenerator;
         _deployer = deployer;
         _runRepository = runRepository;
@@ -48,17 +52,36 @@ public class RunnerWorker : BackgroundService
             
             try
             {
+                // CLEANUP OLD NAMESPACES FIRST (only 1 run at a time)
+                try
+                {
+                    _logger.LogInformation("Cleaning up old run namespaces before starting new run");
+                    var oldNamespaces = await _deployer.ListNamespacesAsync("run-", stoppingToken);
+                    foreach (var ns in oldNamespaces)
+                    {
+                        _logger.LogInformation("Deleting old namespace: {Namespace}", ns);
+                        await _deployer.DeleteNamespaceAsync(ns, stoppingToken);
+                    }
+                }
+                catch (Exception cleanupEx)
+                {
+                    _logger.LogWarning(cleanupEx, "Failed to cleanup old namespaces, continuing anyway");
+                }
+
                 // Get run record
                 var run = await _runRepository.GetByIdAsync(buildSucceeded.RunId, stoppingToken);
                 if (run == null)
                 {
-                    _logger.LogWarning("Run not found: {RunId}", buildSucceeded.RunId);
-                    return true; // Acknowledge anyway
+                    _logger.LogWarning("Run not found: {RunId} - will retry (race condition with Orchestrator)", buildSucceeded.RunId);
+                    return false; // Retry - Run record may not be created yet by Orchestrator
                 }
 
                 // Generate Kubernetes resources based on mode
                 KubernetesResources resources;
                 string primaryServiceName = "app";
+
+                // Emit progress: Generating Kubernetes resources
+                await EmitDeploymentProgressAsync(buildSucceeded.RunId, "Generating Kubernetes resources", stoppingToken);
 
                 if (buildSucceeded.Mode == RunMode.Dockerfile)
                 {
@@ -71,11 +94,16 @@ public class RunnerWorker : BackgroundService
                 }
                 else if (buildSucceeded.Mode == RunMode.Compose)
                 {
-                    // Determine primary service from run record or use first service
-                    primaryServiceName = buildSucceeded.Services
-                        .FirstOrDefault(s => s.Name == run.ImageRefs.FirstOrDefault())?.Name
+                    // Use primary service from run record, fallback to first service with web-like ports
+                    primaryServiceName = !string.IsNullOrEmpty(run.PrimaryService) 
+                        ? run.PrimaryService
+                        : buildSucceeded.Services.FirstOrDefault(s => s.Ports.Any(p => p == 80 || p == 3000 || p == 8080 || p == 3100 || p == 5000))?.Name
                         ?? buildSucceeded.Services.FirstOrDefault()?.Name
                         ?? "app";
+
+                    _logger.LogInformation(
+                        "Selected primary service: {PrimaryService} for RunId={RunId}",
+                        primaryServiceName, buildSucceeded.RunId);
 
                     resources = await _resourceGenerator.GenerateComposeModeResourcesAsync(
                         buildSucceeded.RunId,
@@ -89,11 +117,28 @@ public class RunnerWorker : BackgroundService
                     throw new InvalidOperationException($"Unknown run mode: {buildSucceeded.Mode}");
                 }
 
+                // Emit progress: Deploying to Kubernetes
+                await EmitDeploymentProgressAsync(buildSucceeded.RunId, "Deploying to Kubernetes", stoppingToken);
+
                 // Deploy to Kubernetes
                 var namespaceName = await _deployer.DeployAsync(resources, stoppingToken);
 
-                // Generate preview URL
+                // Emit progress: Waiting for application to be ready
+                await EmitDeploymentProgressAsync(buildSucceeded.RunId, "Application is starting", stoppingToken);
+
+                // Generate preview URL (primary service)
                 var previewUrl = _deployer.GetPreviewUrl(namespaceName, primaryServiceName, resources.ExposedPort);
+
+                // Log all accessible service URLs
+                var allServiceUrls = _deployer.GetAllServiceUrls(resources);
+                if (allServiceUrls.Any())
+                {
+                    _logger.LogInformation("📍 All accessible service endpoints:");
+                    foreach (var kvp in allServiceUrls)
+                    {
+                        _logger.LogInformation("  • {Service} → {Url}", kvp.Key, kvp.Value);
+                    }
+                }
 
                 // Update run record
                 run.Status = "Running";
@@ -162,5 +207,29 @@ public class RunnerWorker : BackgroundService
             
             return true; // Acknowledge
         }, stoppingToken);
+    }
+
+    /// <summary>
+    /// Emit deployment progress updates for better UX
+    /// </summary>
+    private async Task EmitDeploymentProgressAsync(string runId, string message, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var progress = new BuildProgress
+            {
+                RunId = runId,
+                Current = 0,
+                Total = 0,
+                ServiceName = message,
+                Timestamp = Timestamp.FromDateTime(DateTime.UtcNow)
+            };
+            await _buildProgressProducer.PublishAsync(progress, cancellationToken);
+            _logger.LogInformation("📊 Deployment: {Message}", message);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to emit deployment progress for RunId={RunId}", runId);
+        }
     }
 }

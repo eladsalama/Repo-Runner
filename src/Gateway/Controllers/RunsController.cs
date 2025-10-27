@@ -26,6 +26,9 @@ public class RunsController : ControllerBase
     {
         try
         {
+            _logger.LogInformation("StartRun REST endpoint called: RepoUrl={RepoUrl}, Mode={Mode}, PrimaryService={PrimaryService}", 
+                request.RepoUrl, request.Mode, request.PrimaryService);
+            
             // Map RunMode from string to enum
             var mode = request.Mode?.ToUpperInvariant() switch
             {
@@ -90,7 +93,8 @@ public class RunsController : ControllerBase
                 endedAt = response.EndedAt?.ToDateTime(),
                 errorMessage = response.ErrorMessage,
                 mode = response.Mode.ToString(),
-                primaryService = response.PrimaryService
+                primaryService = response.PrimaryService,
+                buildProgress = response.BuildProgress
             });
         }
         catch (Exception ex)

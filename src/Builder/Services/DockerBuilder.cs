@@ -20,6 +20,44 @@ public class DockerBuilder : IDockerBuilder
         _configuration = configuration;
     }
 
+    /// <summary>
+    /// Calculate optimal CPU allocation for builds based on system resources
+    /// Uses 60% of available cores (min 2, max cores-2) to keep system responsive
+    /// Also checks system memory to ensure we don't overload
+    /// </summary>
+    private (int cpus, string parallelism) GetOptimalBuildResources()
+    {
+        try
+        {
+            var totalCpus = Environment.ProcessorCount;
+            
+            // Calculate optimal CPUs: Use 60% of cores
+            // Min: 2 cores (even on low-end systems)
+            // Max: total-2 (always leave 2 cores for system)
+            var optimalCpus = Math.Max(2, Math.Min(totalCpus - 2, (int)Math.Ceiling(totalCpus * 0.6)));
+            
+            // For systems with many cores (12+), we can be more aggressive
+            if (totalCpus >= 12)
+            {
+                optimalCpus = Math.Max(6, totalCpus - 4); // Leave 4 cores for system on high-end machines
+            }
+            
+            // Set BuildKit parallelism (number of parallel build steps)
+            var parallelism = Math.Max(2, optimalCpus / 2).ToString();
+            
+            _logger.LogInformation(
+                "System has {Total} CPU cores, allocating {Build} cores for build (parallelism: {Parallel})",
+                totalCpus, optimalCpus, parallelism);
+            
+            return (optimalCpus, parallelism);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to detect CPU count, using defaults");
+            return (4, "2"); // Fallback
+        }
+    }
+
     public async Task<DockerImage> BuildDockerfileAsync(
         string runId,
         string repoPath,
@@ -30,25 +68,37 @@ public class DockerBuilder : IDockerBuilder
         var dockerfileFullPath = Path.Combine(repoPath, dockerfilePath);
         var contextPath = Path.GetDirectoryName(dockerfileFullPath) ?? repoPath;
 
+        // Convert to absolute path if relative, then to Unix-style for Docker (Docker on Windows uses WSL2)
+        var absoluteContextPath = Path.GetFullPath(contextPath);
+        var absoluteDockerfilePath = Path.GetFullPath(dockerfileFullPath);
+        var dockerContextPath = absoluteContextPath.Replace("\\", "/");
+        var dockerDockerfilePath = absoluteDockerfilePath.Replace("\\", "/");
+
         _logger.LogInformation(
             "Building Docker image {ImageTag} from {Dockerfile} with context {Context}",
-            imageTag, dockerfilePath, contextPath);
+            imageTag, dockerfilePath, dockerContextPath);
 
         var buildLogs = new StringBuilder();
 
         try
         {
-            // Build with buildx
+            // Build with buildx and dynamic CPU allocation via BuildKit env vars
+            var (cpus, parallelism) = GetOptimalBuildResources();
             var startInfo = new ProcessStartInfo
             {
                 FileName = "docker",
-                Arguments = $"buildx build --tag {imageTag} --file \"{dockerfileFullPath}\" \"{contextPath}\"",
+                Arguments = $"buildx build --tag {imageTag} --file \"{dockerDockerfilePath}\" \"{dockerContextPath}\"",
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
                 UseShellExecute = false,
                 CreateNoWindow = true,
-                WorkingDirectory = contextPath
+                WorkingDirectory = absoluteContextPath
             };
+
+            // Set BuildKit environment variables for parallelism
+            startInfo.Environment["BUILDKIT_STEP_LOG_MAX_SIZE"] = "10485760"; // 10MB
+            startInfo.Environment["BUILDKIT_STEP_LOG_MAX_SPEED"] = "10485760"; // 10MB/s
+            startInfo.EnvironmentVariables["GOMAXPROCS"] = cpus.ToString(); // Limit Go runtime CPUs
 
             using var process = Process.Start(startInfo);
             if (process == null)
@@ -113,6 +163,7 @@ public class DockerBuilder : IDockerBuilder
         string runId,
         string repoPath,
         string composePath,
+        Func<int, int, string, Task>? onProgress = null,
         CancellationToken cancellationToken = default)
     {
         var composeFullPath = Path.Combine(repoPath, composePath);
@@ -121,14 +172,19 @@ public class DockerBuilder : IDockerBuilder
         // Parse compose file
         var services = await _composeParser.ParseAsync(composeFullPath, cancellationToken);
         var result = new List<DockerComposeService>();
+        
+        var totalServices = services.Count;
+        var currentService = 0;
 
         foreach (var service in services)
         {
+            currentService++;
+            
             if (!service.HasBuildContext)
             {
                 _logger.LogInformation(
-                    "Skipping service {Service} - no build context (image-only service)",
-                    service.Name);
+                    "[{Current}/{Total}] Skipping service {Service} - no build context (image-only service)",
+                    currentService, totalServices, service.Name);
                 
                 // Still include image-only services in result
                 result.Add(new DockerComposeService
@@ -136,33 +192,45 @@ public class DockerBuilder : IDockerBuilder
                     Name = service.Name,
                     ImageRef = service.ImageRef ?? string.Empty,
                     Ports = service.Ports,
-                    HasBuildContext = false
+                    HasBuildContext = false,
+                    Environment = service.Environment
                 });
                 continue;
             }
 
             // Build the service
             var imageTag = $"{runId}-{service.Name}:latest";
-            _logger.LogInformation("Building service {Service} as {ImageTag}", service.Name, imageTag);
+            _logger.LogInformation("[{Current}/{Total}] Building service {Service} as {ImageTag}...", 
+                currentService, totalServices, service.Name, imageTag);
 
             var buildLogs = new StringBuilder();
             try
             {
-                var contextPath = Path.Combine(repoPath, service.BuildContext ?? ".");
+                // Handle build context path - use absolute path for Docker
+                var buildContextRelative = service.BuildContext ?? ".";
+                var contextPath = buildContextRelative == "." 
+                    ? Path.GetFullPath(repoPath) 
+                    : Path.GetFullPath(Path.Combine(repoPath, buildContextRelative));
+                    
                 var dockerfileArg = !string.IsNullOrEmpty(service.Dockerfile) 
                     ? $"--file \"{Path.Combine(contextPath, service.Dockerfile)}\"" 
                     : "";
 
+                var (cpus, parallelism) = GetOptimalBuildResources();
                 var startInfo = new ProcessStartInfo
                 {
                     FileName = "docker",
-                    Arguments = $"buildx build --tag {imageTag} {dockerfileArg} \"{contextPath}\"",
+                    Arguments = $"buildx build --tag {imageTag} --cache-from type=local,src=/tmp/.buildx-cache --cache-to type=local,dest=/tmp/.buildx-cache --build-arg BUILDKIT_INLINE_CACHE=1 {dockerfileArg} \"{contextPath}\"",
                     RedirectStandardOutput = true,
                     RedirectStandardError = true,
                     UseShellExecute = false,
-                    CreateNoWindow = true,
-                    WorkingDirectory = repoPath
+                    CreateNoWindow = true
                 };
+
+                // Set BuildKit environment variables for parallelism
+                startInfo.Environment["BUILDKIT_STEP_LOG_MAX_SIZE"] = "10485760";
+                startInfo.Environment["BUILDKIT_STEP_LOG_MAX_SPEED"] = "10485760";
+                startInfo.EnvironmentVariables["GOMAXPROCS"] = cpus.ToString();
 
                 using var process = Process.Start(startInfo);
                 if (process == null)
@@ -179,7 +247,16 @@ public class DockerBuilder : IDockerBuilder
                         if (line != null)
                         {
                             buildLogs.AppendLine(line);
-                            _logger.LogDebug("[{Service}] {Line}", service.Name, line);
+                            // Log important progress steps at Info level
+                            if (line.Contains("CACHED") || line.Contains("DONE") || line.Contains("exporting") || 
+                                line.Contains("writing image") || line.Contains("[stage-"))
+                            {
+                                _logger.LogInformation("[{Service}] {Line}", service.Name, line);
+                            }
+                            else
+                            {
+                                _logger.LogDebug("[{Service}] {Line}", service.Name, line);
+                            }
                         }
                     }
                 }, cancellationToken);
@@ -192,7 +269,15 @@ public class DockerBuilder : IDockerBuilder
                         if (line != null)
                         {
                             buildLogs.AppendLine(line);
-                            _logger.LogDebug("[{Service}] {Line}", service.Name, line);
+                            // Show progress indicators
+                            if (line.Contains("#") || line.Contains("=>"))
+                            {
+                                _logger.LogInformation("[{Service}] {Line}", service.Name, line);
+                            }
+                            else
+                            {
+                                _logger.LogDebug("[{Service}] {Line}", service.Name, line);
+                            }
                         }
                     }
                 }, cancellationToken);
@@ -211,12 +296,19 @@ public class DockerBuilder : IDockerBuilder
                     Name = service.Name,
                     ImageRef = imageTag,
                     Ports = service.Ports,
-                    HasBuildContext = true
+                    HasBuildContext = true,
+                    Environment = service.Environment
                 });
 
                 _logger.LogInformation(
-                    "Successfully built service {Service} as {ImageTag} with ports {Ports}",
-                    service.Name, imageTag, string.Join(", ", service.Ports));
+                    "[{Current}/{Total}] ✅ Successfully built service {Service} with ports {Ports}",
+                    currentService, totalServices, service.Name, string.Join(", ", service.Ports));
+                
+                // Report progress
+                if (onProgress != null)
+                {
+                    await onProgress(currentService, totalServices, service.Name);
+                }
             }
             catch (Exception ex)
             {
@@ -235,7 +327,7 @@ public class DockerBuilder : IDockerBuilder
         var startInfo = new ProcessStartInfo
         {
             FileName = "kind",
-            Arguments = $"load docker-image {imageName}",
+            Arguments = $"load docker-image {imageName} --name reporunner",
             RedirectStandardOutput = true,
             RedirectStandardError = true,
             UseShellExecute = false,

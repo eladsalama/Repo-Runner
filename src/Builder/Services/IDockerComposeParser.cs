@@ -8,6 +8,7 @@ public class ComposeService
     public string? Dockerfile { get; set; }
     public List<int> Ports { get; set; } = new();
     public bool HasBuildContext { get; set; }
+    public Dictionary<string, string> Environment { get; set; } = new();
 }
 
 public interface IDockerComposeParser

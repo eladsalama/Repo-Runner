@@ -31,14 +31,15 @@ public class RedisStreamProducer<T> : IStreamProducer<T> where T : class, IMessa
         {
             var db = _redis.GetDatabase();
             
-            // Serialize protobuf message to bytes
+            // Serialize protobuf message to bytes and Base64 encode for Redis storage
             var payload = @event.ToByteArray();
+            var base64Payload = Convert.ToBase64String(payload);
             
             // Add to stream with payload as a single field
             var nameValueEntries = new NameValueEntry[]
             {
                 new NameValueEntry("type", @event.GetType().Name),
-                new NameValueEntry("payload", payload)
+                new NameValueEntry("payload", base64Payload)
             };
 
             var messageId = await db.StreamAddAsync(_streamName, nameValueEntries);

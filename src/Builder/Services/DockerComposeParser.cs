@@ -121,6 +121,39 @@ public class DockerComposeParser : IDockerComposeParser
                     }
                 }
 
+                // Parse environment variables
+                if (serviceConfig.TryGetValue("environment", out var envObj))
+                {
+                    if (envObj is Dictionary<object, object> envDict)
+                    {
+                        // Format: key: value
+                        foreach (var envKvp in envDict)
+                        {
+                            var key = envKvp.Key?.ToString();
+                            var value = envKvp.Value?.ToString();
+                            if (!string.IsNullOrEmpty(key) && value != null)
+                            {
+                                composeService.Environment[key] = value;
+                            }
+                        }
+                    }
+                    else if (envObj is List<object> envList)
+                    {
+                        // Format: - KEY=value
+                        foreach (var envItem in envList)
+                        {
+                            var envStr = envItem?.ToString();
+                            if (string.IsNullOrEmpty(envStr)) continue;
+                            
+                            var parts = envStr.Split('=', 2);
+                            if (parts.Length == 2)
+                            {
+                                composeService.Environment[parts[0]] = parts[1];
+                            }
+                        }
+                    }
+                }
+
                 result.Add(composeService);
                 _logger.LogInformation(
                     "Parsed service: {Service}, Image: {Image}, BuildContext: {Context}, Ports: {Ports}",

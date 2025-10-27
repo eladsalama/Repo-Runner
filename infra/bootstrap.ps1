@@ -184,6 +184,22 @@ function Apply-Infrastructure {
   Check-Prerequisites
   Step ("Terraform dir: " + $ResolvedTfDir); OK
 
+  Step "Clean Terraform state (prevent stale state issues)..."
+  try {
+    $tfStateFile = Join-Path $ResolvedTfDir "terraform.tfstate"
+    $tfStateBackup = Join-Path $ResolvedTfDir "terraform.tfstate.backup"
+    $tfLockFile = Join-Path $ResolvedTfDir ".terraform.lock.hcl"
+    $tfDir = Join-Path $ResolvedTfDir ".terraform"
+    
+    if (Test-Path $tfStateFile) { Remove-Item -Force $tfStateFile }
+    if (Test-Path $tfStateBackup) { Remove-Item -Force $tfStateBackup }
+    if (Test-Path $tfLockFile) { Remove-Item -Force $tfLockFile }
+    if (Test-Path $tfDir) { Remove-Item -Recurse -Force $tfDir }
+    OK
+  } catch {
+    FAIL "Failed to clean Terraform state: $_"
+  }
+
   Step "Reset existing kind cluster (if any)..."
   $clusters = ""
   try { $clusters = kind get clusters 2>&1 | Out-String } catch {}

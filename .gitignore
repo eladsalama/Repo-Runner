@@ -17,7 +17,6 @@ dist/
 # Env & tooling
 .env
 .env.*
-.vscode/
 .idea/
 
 # Docker/K8s artifacts

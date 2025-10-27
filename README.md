@@ -9,8 +9,9 @@ One-click deployment of any public GitHub repo (Dockerfile or docker-compose.yml
 - **One-Click Deploy**: Browser extension detects Dockerfiles, builds & runs automatically
 - **Isolated Sandboxes**: Each run gets its own Kubernetes namespace with resource limits
 - **Real-Time Logs**: Live build and runtime logs streamed to browser
-- **Preview URLs**: Instant access to running apps via NodePort
-- **Multi-Service Support**: Full docker-compose.yml support with service selection
+- **Auto Port-Forwarding**: Deployed apps automatically accessible on localhost
+- **Multi-Service Support**: Full docker-compose.yml support with automatic service detection
+- **Auto-Migrations**: Prisma databases automatically initialized on deployment
 - **Auto-Cleanup**: TTL-based namespace deletion (2h default)
 
 ## Stack
@@ -39,27 +40,32 @@ choco install docker-desktop kubernetes-cli kubernetes-helm terraform kind git -
 ```powershell
 git clone https://github.com/eladsalama/Repo-Runner.git
 cd Repo-Runner\infra
-.\bootstrap.ps1 apply  # Takes 5-10 min
+.\bootstrap.ps1 apply  # Takes 2-3 min
+.\set-kubeconfig.ps1
 .\bootstrap.ps1 verify
 ```
 
-Creates: kind cluster + Redis + MongoDB + NodePort 30080
+Creates: kind cluster + Redis + MongoDB
 
 ---
 
-### 3. Start Services
+### 3. Start Services (Background)
 
+**One command to start all services:**
 ```powershell
 cd ..  # Back to repo root
-.\start-services.ps1
+.\scripts\start-background.ps1
 ```
 
 **What this does:**
+- Checks if services are already running
+- Starts any stopped services as **background jobs**
+- Services keep running in background (no terminal windows)
 - Auto port-forwards MongoDB (27017) & Redis (6379)
-- Starts Gateway, Orchestrator, Builder, Runner in separate windows
-- Services auto-connect to local databases
 
-⏱️ Wait ~10s for all services to show "Application started"
+⏱️ First start takes ~10s for initialization. Subsequent runs detect already-running services instantly.
+
+💡 **Tip:** Services run once and stay up. No need to restart unless you update code.
 
 ---
 
@@ -80,25 +86,59 @@ npm run build
 
 ### 5. Try It!
 
-1. Open any GitHub repo with a Dockerfile (e.g., https://github.com/docker/docker-bench-security)
+1. Open any GitHub repo with a Dockerfile (e.g., https://github.com/eladsalama/stock-dashboard)
 2. Click green **"Run Locally"** button (top-right)
 3. Click **"Start Run"**
-4. Watch: `QUEUED → BUILDING → RUNNING`
-5. Access preview at http://localhost:30080 when status = `RUNNING`
+4. Watch progress: `QUEUED → BUILDING → DEPLOYING → SUCCEEDED`
+5. Click **"Open Preview"** button to access your deployed app (automatic port-forwarding!)
 
-**docker-compose repos:** Extension auto-detects and lets you select primary service
+**docker-compose repos:** Extension auto-detects services and you can toggle between Compose/Dockerfile modes
+
+**What happens automatically:**
+- Docker images built and loaded into kind cluster
+- Kubernetes namespace created with all services
+- Environment variables parsed from docker-compose.yml
+- Prisma migrations executed (if detected)
+- Port-forwards created to localhost (prefers native ports: web→3100, api→3000)
+- Preview URL points to your localhost
 
 ---
 
+## Cleanup
+
+**Stop a specific run:** Click "Stop Run" button in extension (cleans up namespace + port-forwards)
+
+**Stop all services:**
+```powershell
+.\scripts\stop-services.ps1
+```
+
+**Destroy infrastructure:**
+```powershell
+cd infra
+.\bootstrap.ps1 destroy
+```
+
+---
+
+
 ## Monitoring
 
-**Service Logs:** Check the PowerShell windows opened by `start-services.ps1`
+**Service Logs:** Use the monitoring script to watch all services:
+```powershell
+.\scripts\monitor-logs.ps1
+```
 
 **Run Status:**
 ```powershell
 kubectl get namespaces | Select-String "run-"  # List all runs
 kubectl get pods -n run-<run-id>               # Check run pods
 kubectl logs -n run-<run-id> <pod-name>        # View pod logs
+```
+
+**Active Port-Forwards:**
+```powershell
+Get-Process | Where-Object { $_.ProcessName -eq 'kubectl' -and $_.CommandLine -like '*port-forward*' }
 ```
 
 **Database:**
@@ -111,40 +151,33 @@ db.runs.find().pretty()
 
 ---
 
-## Cleanup
-
-**Stop services:** Close PowerShell windows + stop port-forward jobs:
-```powershell
-Get-Job | Where-Object { $_.Name -like "PortForward*" } | Stop-Job | Remove-Job
-```
-
-**Destroy infrastructure:**
-```powershell
-cd infra
-.\bootstrap.ps1 destroy
-```
-
----
-
 ## Troubleshooting
 
 | Issue | Solution |
 |-------|----------|
 | **Extension button missing** | Refresh page (Ctrl+Shift+R). Check F12 Console for errors. Verify repo has `Dockerfile` or `docker-compose.yml` in root. |
-| **"Failed to start" error** | Ensure Gateway is running (`.\start-services.ps1`). Check http://localhost:5247 is accessible. |
-| **Build fails: "git not found"** | `choco install git -y` then restart Builder service |
+| **"Failed to start" error** | Ensure Gateway is running (`.\scripts\start-background.ps1`). Check http://localhost:5247 is accessible. |
+| **Build fails: "git not found"** | `choco install git -y` then restart services |
 | **Build fails: "docker not found"** | Verify Docker Desktop is running: `docker ps` |
-| **Pods stuck in "Pending"** | Increase Docker Desktop RAM to 6GB+ (Settings → Resources) |
-| **Services crash immediately** | Check port-forward jobs are running: `Get-Job`. Restart with `.\start-services.ps1` |
+| **Pods stuck in "Pending"** | Increase Docker Desktop RAM to 6GB+ (Settings → Resources → Memory) |
+| **"Port already in use"** | Another app is using the port. Runner will try nearby ports automatically (3100→3101→3102...) |
+| **Preview URL won't open** | Check port-forward is active: `Get-Process kubectl`. Restart run if needed. |
 
 ---
 
 ## Documentation
 
+- **[AUDIT-REPORT.md](AUDIT-REPORT.md)** - Comprehensive validation report (all systems verified ✅)
+- **[PORT-MAPPING.md](PORT-MAPPING.md)** - Complete port allocation reference
 - **[QUICKREF.md](QUICKREF.md)** - Command cheat sheet
 - **[docs/Progress.md](docs/Progress.md)** - Milestone tracking & roadmap
 - **[docs/Plan.md](docs/Plan.md)** - Architecture deep-dive
 - **[infra/PREREQUISITES.md](infra/PREREQUISITES.md)** - Detailed tool installation
+
+**Quick Validation:**
+```powershell
+.\scripts\quick-check.ps1  # Run before every demo
+```
 
 ---
 

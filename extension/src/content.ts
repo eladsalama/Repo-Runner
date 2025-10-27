@@ -156,12 +156,13 @@ interface RepoDetection {
   hasCompose: boolean;
   mode: 'DOCKERFILE' | 'COMPOSE' | null;
   composePath?: string;
+  services?: string[]; // Docker Compose service names
 }
 
 /**
  * Detects if repo has Dockerfile or docker-compose.yml
  */
-function detectRepoFiles(): RepoDetection {
+async function detectRepoFiles(): Promise<RepoDetection> {
   const result: RepoDetection = {
     hasDockerfile: false,
     hasCompose: false,
@@ -189,6 +190,41 @@ function detectRepoFiles(): RepoDetection {
     if (composeVariants.includes(filename)) {
       result.hasCompose = true;
       result.composePath = filename;
+      
+      // Fetch and parse docker-compose to extract service names
+      try {
+        const rawUrl = href.replace('/blob/', '/raw/');
+        const response = await fetch(rawUrl);
+        const composeText = await response.text();
+        
+        // Simple YAML parsing to extract top-level service names
+        const servicesMatch = composeText.match(/^services:\s*$/m);
+        if (servicesMatch) {
+          const servicesSection = composeText.substring(servicesMatch.index! + servicesMatch[0].length);
+          const serviceNames: string[] = [];
+          const lines = servicesSection.split('\n');
+          
+          for (const line of lines) {
+            // Match service names (non-indented or 2-space indented lines that end with :)
+            const match = line.match(/^  ([a-z0-9_-]+):\s*$/i);
+            if (match) {
+              serviceNames.push(match[1]);
+            } else if (line.match(/^[a-z]/i)) {
+              // Hit next top-level section, stop
+              break;
+            }
+          }
+          
+          if (serviceNames.length > 0) {
+            result.services = serviceNames;
+            console.log('[RepoRunner] Detected services:', serviceNames);
+          }
+        }
+      } catch (err) {
+        console.warn('[RepoRunner] Failed to fetch docker-compose.yml:', err);
+        // Fallback to common service names
+        result.services = ['web', 'app', 'api', 'frontend'];
+      }
     }
   }
 
@@ -200,6 +236,29 @@ function detectRepoFiles(): RepoDetection {
   }
 
   return result;
+}
+
+/**
+ * Auto-detect primary/web service from list of services
+ * Priority: web > frontend > app > client > ui > first service
+ */
+function detectPrimaryService(services: string[]): string {
+  if (!services || services.length === 0) {
+    return '';
+  }
+  
+  const webKeywords = ['web', 'frontend', 'front-end', 'app', 'client', 'ui', 'www'];
+  
+  // Try to find service matching web keywords (case-insensitive)
+  for (const keyword of webKeywords) {
+    const match = services.find(s => s.toLowerCase().includes(keyword));
+    if (match) {
+      return match;
+    }
+  }
+  
+  // Fallback: return first service
+  return services[0];
 }
 
 /**
@@ -316,31 +375,48 @@ function injectRunButton(detection: RepoDetection): void {
       <div style="font-size: ${CONTENT_FONT_SIZE}; font-weight: ${CONTENT_FONT_WEIGHT}; color: ${CONTENT_COLOR}; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Noto Sans', Helvetica, Arial, sans-serif;">${repoName}</div>
     </div>
     <div style="padding: ${DROPDOWN_PADDING}; border-bottom: 1px solid ${SECTION_DIVIDER_COLOR};">
-      <div style="font-size: ${LABEL_FONT_SIZE}; font-weight: ${LABEL_FONT_WEIGHT}; color: ${LABEL_COLOR}; margin-bottom: ${LABEL_MARGIN_BOTTOM}; text-transform: ${LABEL_TEXT_TRANSFORM}; letter-spacing: ${LABEL_LETTER_SPACING};">Mode</div>
+      <div style="font-size: ${LABEL_FONT_SIZE}; font-weight: ${LABEL_FONT_WEIGHT}; color: ${LABEL_COLOR}; margin-bottom: ${LABEL_MARGIN_BOTTOM}; text-transform: ${LABEL_TEXT_TRANSFORM}; letter-spacing: ${LABEL_LETTER_SPACING};">Build Mode</div>
+      ${detection.hasCompose && detection.hasDockerfile ? `
+      <div id="reporunner-mode-toggle" style="display: inline-flex; border: 1px solid #d0d7de; border-radius: 6px; overflow: hidden;">
+        <button id="reporunner-mode-compose" data-mode="COMPOSE" style="
+          padding: 5px 12px;
+          font-size: 12px;
+          font-weight: 500;
+          background-color: ${detection.mode === 'COMPOSE' ? '#0969da' : '#ffffff'};
+          color: ${detection.mode === 'COMPOSE' ? '#ffffff' : '#24292f'};
+          border: none;
+          cursor: pointer;
+          transition: all 0.2s;
+        ">Compose</button>
+        <button id="reporunner-mode-dockerfile" data-mode="DOCKERFILE" style="
+          padding: 5px 12px;
+          font-size: 12px;
+          font-weight: 500;
+          background-color: ${detection.mode === 'DOCKERFILE' ? '#0969da' : '#ffffff'};
+          color: ${detection.mode === 'DOCKERFILE' ? '#ffffff' : '#24292f'};
+          border: none;
+          border-left: 1px solid #d0d7de;
+          cursor: pointer;
+          transition: all 0.2s;
+        ">Dockerfile</button>
+      </div>
+      ` : `
       <div style="font-size: ${CONTENT_FONT_SIZE}; color: ${CONTENT_COLOR}; font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace; background-color: ${MODE_BG_COLOR}; padding: ${MODE_PADDING}; border-radius: ${MODE_BORDER_RADIUS}; display: inline-block;">${detection.mode}</div>
+      `}
+      <div id="reporunner-services-container">
+      ${detection.mode === 'COMPOSE' && detection.services && detection.services.length > 0 ? `
+      <div style="margin-top: 8px;">
+        <div style="font-size: 11px; font-weight: ${LABEL_FONT_WEIGHT}; color: ${LABEL_COLOR}; opacity: 0.8; margin-bottom: 4px;">SERVICES (ALL WILL BE DEPLOYED)</div>
+        <div style="font-size: 12px; color: ${CONTENT_COLOR}; font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;">
+          ${detection.services.map(svc => {
+            const isPrimary = svc === detectPrimaryService(detection.services!);
+            return `<div style="padding: 2px 0;${isPrimary ? ' font-weight: 600;' : ''}">• ${svc}${isPrimary ? ' (primary)' : ''}</div>`;
+          }).join('')}
+        </div>
+      </div>
+      ` : ''}
+      </div>
     </div>
-    ${detection.mode === 'COMPOSE' ? `
-    <div style="padding: ${DROPDOWN_PADDING}; border-bottom: 1px solid ${SECTION_DIVIDER_COLOR};">
-      <label for="reporunner-primary-service" style="display: block; font-size: ${LABEL_FONT_SIZE}; font-weight: ${LABEL_FONT_WEIGHT}; color: ${LABEL_COLOR}; margin-bottom: ${LABEL_MARGIN_BOTTOM}; text-transform: ${LABEL_TEXT_TRANSFORM}; letter-spacing: ${LABEL_LETTER_SPACING};">Primary Service</label>
-      <select id="reporunner-primary-service" name="primaryService" style="
-        width: 100%;
-        padding: ${SELECT_PADDING};
-        font-size: ${SELECT_FONT_SIZE};
-        line-height: 20px;
-        color: ${SELECT_TEXT_COLOR};
-        background-color: ${SELECT_BG_COLOR};
-        border: 1px solid ${SELECT_BORDER_COLOR};
-        border-radius: ${SELECT_BORDER_RADIUS};
-        outline: none;
-        cursor: pointer;
-      ">
-        <option value="web">web</option>
-        <option value="app">app</option>
-        <option value="api">api</option>
-        <option value="frontend">frontend</option>
-      </select>
-    </div>
-    ` : ''}
     <div style="padding: ${DROPDOWN_PADDING};">
       <div id="reporunner-status" style="
         display: flex;
@@ -415,40 +491,15 @@ function injectRunButton(detection: RepoDetection): void {
         font-size: ${ERROR_FONT_SIZE};
         color: ${ERROR_TEXT_COLOR};
       "></div>
-      <div id="reporunner-logs-container" style="display: none; margin-top: ${LOG_CONTAINER_MARGIN_TOP};">
-        <div id="reporunner-logs-tabs" style="
-          display: flex;
-          gap: 4px;
-          margin-bottom: 8px;
-        "></div>
-        <div style="
-          background-color: ${LOG_CONTAINER_BG_COLOR};
-          border: 1px solid ${LOG_CONTAINER_BORDER_COLOR};
-          border-radius: ${LOG_CONTAINER_BORDER_RADIUS};
-          overflow: hidden;
-        ">
-          <div style="
-            background-color: ${LOG_HEADER_BG_COLOR};
-            padding: ${LOG_HEADER_PADDING};
-            font-size: ${LOG_HEADER_FONT_SIZE};
-            font-weight: 600;
-            color: ${LOG_HEADER_COLOR};
-            border-bottom: 1px solid ${LOG_CONTAINER_BORDER_COLOR};
-          ">
-            <span id="reporunner-logs-header">Logs</span>
-          </div>
-          <div id="reporunner-logs-content" style="
-            height: ${LOG_CONTAINER_HEIGHT};
-            overflow-y: auto;
-            padding: ${LOG_CONTENT_PADDING};
-            font-family: ${LOG_CONTENT_FONT_FAMILY};
-            font-size: ${LOG_CONTENT_FONT_SIZE};
-            line-height: ${LOG_LINE_HEIGHT};
-            color: ${LOG_LINE_COLOR};
-            white-space: pre-wrap;
-            word-wrap: break-word;
-          "></div>
-        </div>
+      <div id="reporunner-run-id" style="
+        margin-top: 16px;
+        font-size: 11px;
+        font-family: ui-monospace, SFMono-Regular, 'SF Mono', Consolas, 'Liberation Mono', Menlo, monospace;
+        color: #57606a;
+        word-break: break-all;
+        display: none;
+      ">
+        <span style="color: #8c959f;">Run ID:</span> <span id="reporunner-run-id-value"></span>
       </div>
     </div>
   `;
@@ -480,6 +531,50 @@ function injectRunButton(detection: RepoDetection): void {
     });
     stopBtn.addEventListener('click', async () => {
       await stopRun();
+    });
+  }
+
+  // Mode toggle buttons (if both Compose and Dockerfile exist)
+  const composeBtn = dropdown.querySelector('#reporunner-mode-compose') as HTMLButtonElement;
+  const dockerfileBtn = dropdown.querySelector('#reporunner-mode-dockerfile') as HTMLButtonElement;
+  
+  if (composeBtn && dockerfileBtn) {
+    composeBtn.addEventListener('click', () => {
+      detection.mode = 'COMPOSE';
+      composeBtn.style.backgroundColor = '#0969da';
+      composeBtn.style.color = '#ffffff';
+      dockerfileBtn.style.backgroundColor = '#ffffff';
+      dockerfileBtn.style.color = '#24292f';
+      
+      // Reload services display
+      const servicesContainer = dropdown.querySelector('#reporunner-services-container');
+      if (servicesContainer && detection.services && detection.services.length > 0) {
+        servicesContainer.innerHTML = `
+          <div style="margin-top: 8px;">
+            <div style="font-size: 11px; font-weight: ${LABEL_FONT_WEIGHT}; color: ${LABEL_COLOR}; opacity: 0.8; margin-bottom: 4px;">SERVICES (ALL WILL BE DEPLOYED)</div>
+            <div style="font-size: 12px; color: ${CONTENT_COLOR}; font-family: ui-monospace, SFMono-Regular, 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;">
+              ${detection.services.map(svc => {
+                const isPrimary = svc === detectPrimaryService(detection.services!);
+                return `<div style="padding: 2px 0;${isPrimary ? ' font-weight: 600;' : ''}">• ${svc}${isPrimary ? ' (primary)' : ''}</div>`;
+              }).join('')}
+            </div>
+          </div>
+        `;
+      }
+    });
+    
+    dockerfileBtn.addEventListener('click', () => {
+      detection.mode = 'DOCKERFILE';
+      dockerfileBtn.style.backgroundColor = '#0969da';
+      dockerfileBtn.style.color = '#ffffff';
+      composeBtn.style.backgroundColor = '#ffffff';
+      composeBtn.style.color = '#24292f';
+      
+      // Hide services display
+      const servicesContainer = dropdown.querySelector('#reporunner-services-container');
+      if (servicesContainer) {
+        servicesContainer.innerHTML = '';
+      }
     });
   }
 
@@ -533,16 +628,32 @@ async function startRun(detection: RepoDetection, repoUrl: string | null): Promi
   const errorEl = document.getElementById('reporunner-error')!;
   const startBtn = document.getElementById('reporunner-start-btn')! as HTMLButtonElement;
   const stopBtn = document.getElementById('reporunner-stop-btn')!;
-  const primaryServiceSelect = document.getElementById('reporunner-primary-service') as HTMLSelectElement | null;
+  
+  // Auto-detect primary service (no manual selection needed)
+  const primaryService = detection.services && detection.services.length > 0
+    ? detectPrimaryService(detection.services)
+    : undefined;
 
   try {
     errorEl.style.display = 'none';
-    statusText.textContent = 'Starting...';
+    statusText.textContent = 'Starting Gateway service...';
     statusDot.style.backgroundColor = STATUS_DOT_COLOR_STARTING;
     statusEl.style.backgroundColor = STATUS_BG_COLOR_STARTING;
     statusEl.style.borderColor = STATUS_BORDER_COLOR_STARTING;
     statusEl.style.color = STATUS_TEXT_COLOR_STARTING;
     startBtn.disabled = true;
+
+    // Check if Gateway is healthy before starting run
+    try {
+      const healthCheck = await fetch(`${GATEWAY_URL}/health`, { method: 'GET' });
+      if (!healthCheck.ok) {
+        throw new Error('Gateway service not responding');
+      }
+    } catch (healthError) {
+      throw new Error('⚠️ RepoRunner services are not running.\n\nStart them with: .\\scripts\\start-background.ps1');
+    }
+
+    statusText.textContent = 'Starting run...';
 
     const response = await fetch(`${GATEWAY_URL}/api/runs/start`, {
       method: 'POST',
@@ -552,7 +663,7 @@ async function startRun(detection: RepoDetection, repoUrl: string | null): Promi
         branch: 'main',
         mode: detection.mode,
         composePath: detection.composePath,
-        primaryService: primaryServiceSelect?.value
+        primaryService: primaryService
       })
     });
 
@@ -567,19 +678,11 @@ async function startRun(detection: RepoDetection, repoUrl: string | null): Promi
     startBtn.style.display = 'none';
     stopBtn.style.display = 'block';
 
-    // Show logs container and start streaming logs
-    const logsContainer = document.getElementById('reporunner-logs-container')!;
-    logsContainer.style.display = 'block';
-    
-    // Create tabs for COMPOSE mode
-    if (detection.mode === 'COMPOSE') {
-      createLogTabs(detection, primaryServiceSelect?.value);
-    }
-    
-    // Start streaming logs
-    if (currentRunId) {
-      streamLogs(currentRunId, null); // Start with all logs (no service filter)
-    }
+    // Show run ID at bottom
+    const runIdContainer = document.getElementById('reporunner-run-id')!;
+    const runIdValue = document.getElementById('reporunner-run-id-value')!;
+    runIdValue.textContent = currentRunId;
+    runIdContainer.style.display = 'block';
 
     // Start polling status
     pollStatus(statusEl, statusDot, statusText, startBtn, stopBtn);
@@ -602,34 +705,70 @@ async function startRun(detection: RepoDetection, repoUrl: string | null): Promi
 async function stopRun(): Promise<void> {
   if (!currentRunId) return;
 
-  const statusText = document.getElementById('reporunner-status-text')!;
-  const errorEl = document.getElementById('reporunner-error')!;
+  const statusEl = document.getElementById('reporunner-status');
+  const statusDot = document.getElementById('reporunner-status-dot');
+  const statusText = document.getElementById('reporunner-status-text');
+  const errorEl = document.getElementById('reporunner-error');
+  const runIdEl = document.getElementById('reporunner-run-id');
+
+  // Guard against missing elements
+  if (!statusEl || !statusDot || !statusText || !errorEl || !runIdEl) {
+    console.error('[RepoRunner] Stop failed: Required DOM elements not found');
+    return;
+  }
 
   try {
+    // Call stop API
     await fetch(`${GATEWAY_URL}/api/runs/${currentRunId}/stop`, {
       method: 'POST'
     });
 
+    // Update status to "Stopped"
     statusText.textContent = 'Stopped';
+    statusDot.style.backgroundColor = STATUS_DOT_COLOR_READY;
+    statusEl.style.backgroundColor = STATUS_BG_COLOR_READY;
+    statusEl.style.borderColor = STATUS_BORDER_COLOR_READY;
+    statusEl.style.color = STATUS_TEXT_COLOR_READY;
+    
+    // Stop polling
     if (statusPollInterval) {
       clearInterval(statusPollInterval);
       statusPollInterval = null;
     }
+    
+    // Wait a moment to show "Stopped" status
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    
+    // Reset to "Ready" state
+    statusText.textContent = 'Ready';
+    errorEl.style.display = 'none';
+    errorEl.textContent = '';
+    runIdEl.style.display = 'none';
+    
+    // Reset buttons (removes preview button, shows start button)
     resetButtons();
 
   } catch (error) {
-    errorEl.textContent = `Failed to stop: ${(error as Error).message}`;
-    errorEl.style.display = 'block';
+    if (errorEl) {
+      errorEl.textContent = `Failed to stop: ${(error as Error).message}`;
+      errorEl.style.display = 'block';
+    }
   }
 }
 
 /**
  * Poll run status
  */
+let previewUrlOpened = false; // Track if preview URL has been opened
+let animationFrame = 0; // For dot animation
+
 function pollStatus(statusEl: HTMLElement, statusDot: HTMLElement, statusText: HTMLElement, startBtn: HTMLElement, stopBtn: HTMLElement): void {
   if (statusPollInterval) {
     clearInterval(statusPollInterval);
   }
+
+  previewUrlOpened = false; // Reset for new run
+  animationFrame = 0;
 
   statusPollInterval = window.setInterval(async () => {
     if (!currentRunId) {
@@ -645,34 +784,122 @@ function pollStatus(statusEl: HTMLElement, statusDot: HTMLElement, statusText: H
       }
 
       const status = await response.json();
-      statusText.textContent = status.status;
+      
+      // Animate dots for building status (. -> .. -> ... -> . -> ..)
+      const dots = ['.', '..', '...'];
+      const currentDots = dots[animationFrame % 3];
+      animationFrame++;
+      
+      // Display build progress if available with animation
+      if (status.buildProgress) {
+        statusText.textContent = `${status.status} ${currentDots} (${status.buildProgress})`;
+      } else {
+        statusText.textContent = `${status.status} ${currentDots}`;
+      }
 
       // Update colors based on status
-      if (status.status === 'SUCCEEDED') {
+      if (status.status === 'Succeeded') {
         statusDot.style.backgroundColor = STATUS_DOT_COLOR_SUCCESS;
         statusEl.style.backgroundColor = STATUS_BG_COLOR_SUCCESS;
         statusEl.style.borderColor = STATUS_BORDER_COLOR_SUCCESS;
         statusEl.style.color = STATUS_TEXT_COLOR_SUCCESS;
+        statusText.textContent = 'Succeeded ✓';
+        
+        // Show "Open Preview" button
+        showPreviewButton(status.previewUrl);
+        
+        // Stop polling after SUCCEEDED
         clearInterval(statusPollInterval!);
-        resetButtons();
-      } else if (status.status === 'FAILED') {
-        statusDot.style.backgroundColor = STATUS_DOT_COLOR_FAILED;
-        statusEl.style.backgroundColor = STATUS_BG_COLOR_FAILED;
-        statusEl.style.borderColor = STATUS_BORDER_COLOR_FAILED;
-        statusEl.style.color = STATUS_TEXT_COLOR_FAILED;
-        clearInterval(statusPollInterval!);
-        resetButtons();
-      } else if (status.status === 'RUNNING') {
+      } else if (status.status === 'Running') {
         statusDot.style.backgroundColor = STATUS_DOT_COLOR_RUNNING;
         statusEl.style.backgroundColor = STATUS_BG_COLOR_RUNNING;
         statusEl.style.borderColor = STATUS_BORDER_COLOR_RUNNING;
         statusEl.style.color = STATUS_TEXT_COLOR_RUNNING;
+        statusText.textContent = 'Running ✓';
+        
+        // Show "Open Preview" button
+        showPreviewButton(status.previewUrl);
+        
+        clearInterval(statusPollInterval!);
+      } else if (status.status === 'Failed') {
+        statusDot.style.backgroundColor = STATUS_DOT_COLOR_FAILED;
+        statusEl.style.backgroundColor = STATUS_BG_COLOR_FAILED;
+        statusEl.style.borderColor = STATUS_BORDER_COLOR_FAILED;
+        statusEl.style.color = STATUS_TEXT_COLOR_FAILED;
+        statusText.textContent = 'Failed ✗';
+        clearInterval(statusPollInterval!);
+        resetButtons();
       }
 
     } catch (error) {
       console.error('Status poll error:', error);
     }
   }, 2000);
+}
+
+/**
+ * Show preview button when deployment succeeds
+ */
+function showPreviewButton(previewUrl: string | null): void {
+  if (!previewUrl) return;
+  
+  const startBtn = document.getElementById('reporunner-start-btn')! as HTMLButtonElement;
+  const stopBtn = document.getElementById('reporunner-stop-btn')!;
+  
+  // Hide start button only
+  startBtn.style.display = 'none';
+  
+  // Keep stop button visible so user can cleanup
+  stopBtn.style.display = 'inline-flex';
+  
+  // Create or update preview button
+  let previewBtn = document.getElementById('reporunner-preview-btn') as HTMLButtonElement | null;
+  if (!previewBtn) {
+    previewBtn = document.createElement('button');
+    previewBtn.id = 'reporunner-preview-btn';
+    previewBtn.innerHTML = `
+      <svg aria-hidden="true" height="16" viewBox="0 0 16 16" version="1.1" width="16" style="display:inline-block;vertical-align:text-bottom;fill:currentColor;margin-right:4px;">
+        <path d="M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0ZM1.5 8a6.5 6.5 0 1 0 13 0 6.5 6.5 0 0 0-13 0Zm9.78-2.22-5.5 5.5a.749.749 0 0 1-1.275-.326.749.749 0 0 1 .215-.734l5.5-5.5a.751.751 0 0 1 1.042.018.751.751 0 0 1 .018 1.042Z"></path>
+      </svg>
+      Open Preview
+    `;
+    previewBtn.style.cssText = `
+      width: 100%;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: ${ACTION_BTN_PADDING};
+      font-size: ${ACTION_BTN_FONT_SIZE};
+      font-weight: ${ACTION_BTN_FONT_WEIGHT};
+      line-height: 20px;
+      white-space: nowrap;
+      cursor: pointer;
+      user-select: none;
+      border: 1px solid ${ACTION_BTN_BORDER_COLOR};
+      border-radius: ${ACTION_BTN_BORDER_RADIUS};
+      background-color: ${ACTION_BTN_BG_COLOR};
+      color: ${ACTION_BTN_TEXT_COLOR};
+      box-shadow: 0 1px 0 rgba(27, 31, 36, 0.04), inset 0 1px 0 hsla(0, 0%, 100%, 0.25);
+      transition: 0.2s cubic-bezier(0.3, 0, 0.5, 1);
+      margin-bottom: 8px;
+    `;
+    
+    previewBtn.addEventListener('mouseenter', () => {
+      previewBtn!.style.backgroundColor = ACTION_BTN_BG_COLOR_HOVER;
+    });
+    previewBtn.addEventListener('mouseleave', () => {
+      previewBtn!.style.backgroundColor = ACTION_BTN_BG_COLOR;
+    });
+    
+    previewBtn.addEventListener('click', () => {
+      window.open(previewUrl, '_blank');
+    });
+    
+    // Insert before stop button (so preview is above stop)
+    stopBtn.parentNode!.insertBefore(previewBtn, stopBtn);
+  }
+  
+  previewBtn.style.display = 'inline-flex';
 }
 
 /**
@@ -838,16 +1065,43 @@ async function streamLogs(runId: string, serviceName: string | null): Promise<vo
  * Reset buttons to initial state
  */
 function resetButtons(): void {
-  const startBtn = document.getElementById('reporunner-start-btn')!;
-  const stopBtn = document.getElementById('reporunner-stop-btn')!;
-  const logsContainer = document.getElementById('reporunner-logs-container')!;
+  const startBtn = document.getElementById('reporunner-start-btn');
+  const stopBtn = document.getElementById('reporunner-stop-btn');
+  const previewBtn = document.getElementById('reporunner-preview-btn');
+  const logsContainer = document.getElementById('reporunner-logs-container');
+  const errorEl = document.getElementById('reporunner-error');
+  const runIdEl = document.getElementById('reporunner-run-id');
   
-  startBtn.style.display = 'block';
-  stopBtn.style.display = 'none';
-  (startBtn as HTMLButtonElement).disabled = false;
+  // Show start button, hide stop button
+  if (startBtn) {
+    startBtn.style.display = 'block';
+    (startBtn as HTMLButtonElement).disabled = false;
+  }
+  if (stopBtn) {
+    stopBtn.style.display = 'none';
+  }
+  
+  // Remove preview button if it exists
+  if (previewBtn) {
+    previewBtn.remove();
+  }
+  
+  // Hide error message
+  if (errorEl) {
+    errorEl.style.display = 'none';
+    errorEl.textContent = '';
+  }
+  
+  // Hide run ID
+  if (runIdEl) {
+    runIdEl.style.display = 'none';
+  }
   
   // Hide logs when run completes
-  logsContainer.style.display = 'none';
+  if (logsContainer) {
+    logsContainer.style.display = 'none';
+  }
+  
   currentRunId = null;
   currentLogService = null;
 }
@@ -857,9 +1111,9 @@ function resetButtons(): void {
   let attemptCount = 0;
   const maxAttempts = MAX_INJECTION_ATTEMPTS;
   
-  function tryInject() {
+  async function tryInject() {
     attemptCount++;
-    const detection = detectRepoFiles();
+    const detection = await detectRepoFiles();
     
     if (detection.mode) {
       console.log('[RepoRunner] Detected mode:', detection.mode);
@@ -905,12 +1159,13 @@ function resetButtons(): void {
       if (mutation.addedNodes.length > 0) {
         const actionsBar = document.querySelector('.pagehead-actions');
         if (actionsBar && !document.getElementById('reporunner-container')) {
-          const detection = detectRepoFiles();
-          if (detection.mode) {
-            injectRunButton(detection);
-            observer.disconnect(); // Stop observing once injected
-            break;
-          }
+          detectRepoFiles().then(detection => {
+            if (detection.mode) {
+              injectRunButton(detection);
+              observer.disconnect(); // Stop observing once injected
+            }
+          });
+          break;
         }
       }
     }

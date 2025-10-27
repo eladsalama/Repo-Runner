@@ -12,6 +12,7 @@ public class DockerComposeService
     public string ImageRef { get; set; } = string.Empty;
     public List<int> Ports { get; set; } = new();
     public bool HasBuildContext { get; set; }
+    public Dictionary<string, string> Environment { get; set; } = new();
 }
 
 public interface IDockerBuilder
@@ -27,11 +28,13 @@ public interface IDockerBuilder
 
     /// <summary>
     /// Build Docker images for services defined in docker-compose.yml
+    /// Optional onProgress callback receives (current, total, serviceName) after each service completes
     /// </summary>
     Task<List<DockerComposeService>> BuildComposeAsync(
         string runId,
         string repoPath,
         string composePath,
+        Func<int, int, string, Task>? onProgress = null,
         CancellationToken cancellationToken = default);
 
     /// <summary>

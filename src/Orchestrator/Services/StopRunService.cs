@@ -1,4 +1,5 @@
 using Shared.Streams;
+using Shared.Repositories;
 using RepoRunner.Contracts.Events;
 using Google.Protobuf.WellKnownTypes;
 

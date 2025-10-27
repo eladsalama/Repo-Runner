@@ -69,27 +69,33 @@ kind version
 
 ## Quick Start
 
-### 1. Initialize Terraform
+### 1. Apply Infrastructure
 
 ```powershell
-cd infra/terraform
-terraform init
+cd infra
+.\bootstrap.ps1 apply
 ```
 
-This downloads the required providers (kind, helm, kubernetes).
-
-### 2. Apply Infrastructure
-
-```powershell
-terraform apply
-```
-
-Review the plan and type `yes` to proceed. This will:
-- Create a kind cluster named `reporunner` (1 control-plane + 1 worker node)
+This will:
+- Check all prerequisites (Docker, kubectl, helm, terraform, kind)
+- Create a kind cluster named `reporunner`
 - Install all infrastructure services via Helm
 - Configure port mappings for localhost access
 
 **Expected time:** 5-10 minutes depending on your internet speed and machine.
+
+### 2. Set KUBECONFIG (Required!)
+
+After the infrastructure is deployed, you **must** set the KUBECONFIG environment variable in your terminal:
+
+```powershell
+# IMPORTANT: Note the dot and space at the beginning!
+. .\infra\set-kubeconfig.ps1
+```
+
+The dot (`.`) sources the script in your current session, allowing it to set the environment variable.
+
+**Note:** You need to run this command in **every new terminal session** you open.
 
 ### 3. Verify Deployment
 

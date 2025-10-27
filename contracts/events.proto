@@ -28,6 +28,7 @@ message ServiceInfo {
   string name = 1;
   string image_ref = 2;
   repeated int32 ports = 3;
+  map<string, string> environment = 4;
 }
 
 message BuildSucceeded {
@@ -38,6 +39,14 @@ message BuildSucceeded {
   string logs_ref = 5; // reference to build logs in Mongo
   RunMode mode = 6;
   repeated ServiceInfo services = 7; // for COMPOSE mode: multiple services
+}
+
+message BuildProgress {
+  string run_id = 1;
+  int32 current = 2;   // e.g., 3
+  int32 total = 3;     // e.g., 6
+  string service_name = 4; // current service being built
+  google.protobuf.Timestamp timestamp = 5;
 }
 
 message BuildFailed {

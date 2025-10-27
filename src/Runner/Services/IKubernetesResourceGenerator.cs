@@ -29,8 +29,9 @@ public interface IKubernetesResourceGenerator
 public class KubernetesResources
 {
     public string NamespaceName { get; set; } = string.Empty;
-    public V1Namespace Namespace { get; set; } = new();
+    public V1Namespace Namespace { get; set; } = null!;
     public List<V1Deployment> Deployments { get; set; } = new();
     public List<V1Service> Services { get; set; } = new();
     public int ExposedPort { get; set; }
+    public Dictionary<string, List<int>> ServicePorts { get; set; } = new(); // Track all ports per service
 }

@@ -31,9 +31,10 @@ builder.Services.AddStreamConsumer<RunRequested>(
     StreamConfig.Groups.Builder,
     $"builder-{hostname}");
 
-// Add stream producer for BuildSucceeded/Failed events
+// Add stream producer for BuildSucceeded/Failed/Progress events
 builder.Services.AddStreamProducer<BuildSucceeded>(StreamConfig.Streams.RepoRuns);
 builder.Services.AddStreamProducer<BuildFailed>(StreamConfig.Streams.RepoRuns);
+builder.Services.AddStreamProducer<BuildProgress>(StreamConfig.Streams.RepoRuns);
 
 // Add Builder services
 builder.Services.AddSingleton<IGitCloner, GitCloner>();

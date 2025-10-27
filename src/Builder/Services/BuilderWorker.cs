@@ -12,6 +12,7 @@ public class BuilderWorker : BackgroundService
     private readonly IStreamConsumer<RunRequested> _consumer;
     private readonly IStreamProducer<BuildSucceeded> _buildSucceededProducer;
     private readonly IStreamProducer<BuildFailed> _buildFailedProducer;
+    private readonly IStreamProducer<BuildProgress> _buildProgressProducer;
     private readonly IGitCloner _gitCloner;
     private readonly IDockerBuilder _dockerBuilder;
     private readonly IBuildLogsRepository _buildLogsRepository;
@@ -23,6 +24,7 @@ public class BuilderWorker : BackgroundService
         IStreamConsumer<RunRequested> consumer,
         IStreamProducer<BuildSucceeded> buildSucceededProducer,
         IStreamProducer<BuildFailed> buildFailedProducer,
+        IStreamProducer<BuildProgress> buildProgressProducer,
         IGitCloner gitCloner,
         IDockerBuilder dockerBuilder,
         IBuildLogsRepository buildLogsRepository,
@@ -33,6 +35,7 @@ public class BuilderWorker : BackgroundService
         _consumer = consumer;
         _buildSucceededProducer = buildSucceededProducer;
         _buildFailedProducer = buildFailedProducer;
+        _buildProgressProducer = buildProgressProducer;
         _gitCloner = gitCloner;
         _dockerBuilder = dockerBuilder;
         _buildLogsRepository = buildLogsRepository;
@@ -175,6 +178,9 @@ public class BuilderWorker : BackgroundService
         buildLog.Content += $"Found Dockerfile at {dockerfilePath}\n";
         await WriteLogAsync(runRequested.RunId, $"Found Dockerfile at {dockerfilePath}", null, cancellationToken);
 
+        // Emit progress: Building image
+        await EmitBuildProgressAsync(runRequested.RunId, "Building image", cancellationToken);
+
         // Build Docker image
         var image = await _dockerBuilder.BuildDockerfileAsync(
             runRequested.RunId,
@@ -184,6 +190,9 @@ public class BuilderWorker : BackgroundService
 
         buildLog.Content += $"Built image: {image.ImageRef}\n";
         buildLog.Content += $"Detected ports: {string.Join(", ", image.Ports)}\n";
+
+        // Emit progress: Loading into kind
+        await EmitBuildProgressAsync(runRequested.RunId, "Loading image into kind cluster", cancellationToken);
 
         // Load into kind
         await _dockerBuilder.LoadIntoKindAsync(image.ImageRef, cancellationToken);
@@ -230,23 +239,86 @@ public class BuilderWorker : BackgroundService
 
         buildLog.Content += $"Found docker-compose.yml at {composePath}\n";
 
-        // Build compose services
+        // Track total services for progress
+        var serviceCount = 0;
+        var currentService = 0;
+
+        // Build compose services with progress reporting
         var services = await _dockerBuilder.BuildComposeAsync(
             runRequested.RunId,
             repoPath,
             composePath,
+            async (current, total, serviceName) =>
+            {
+                serviceCount = total;
+                currentService = current;
+                
+                // Emit BuildProgress event for service builds
+                var progress = new BuildProgress
+                {
+                    RunId = runRequested.RunId,
+                    Current = current,
+                    Total = total + 1, // +1 for the "loading into kind" step
+                    ServiceName = $"Building {serviceName}",
+                    Timestamp = Timestamp.FromDateTime(DateTime.UtcNow)
+                };
+                await _buildProgressProducer.PublishAsync(progress, cancellationToken);
+                _logger.LogInformation(
+                    "📊 Progress: [{Current}/{Total}] - Building {ServiceName}",
+                    current, total + 1, serviceName);
+            },
             cancellationToken);
 
-        buildLog.Content += $"Built {services.Count} services:\n";
-        foreach (var service in services)
+        buildLog.Content += $"Processed {services.Count} services:\n";
+        
+        // Count services that need to be loaded into kind
+        var servicesToLoad = services.Where(s => s.HasBuildContext).ToList();
+        
+        if (servicesToLoad.Any())
         {
-            buildLog.Content += $"  - {service.Name}: {service.ImageRef} (ports: {string.Join(", ", service.Ports)})\n";
-            
-            // Load built images into kind (skip image-only services)
-            if (service.HasBuildContext)
+            // Emit progress for each image being loaded
+            int loadedCount = 0;
+            foreach (var service in servicesToLoad)
             {
+                loadedCount++;
+                
+                // Emit progress: Loading image [X/Y]
+                var loadProgress = new BuildProgress
+                {
+                    RunId = runRequested.RunId,
+                    Current = serviceCount + loadedCount,
+                    Total = serviceCount + servicesToLoad.Count,
+                    ServiceName = $"Loading {service.Name} into kind cluster",
+                    Timestamp = Timestamp.FromDateTime(DateTime.UtcNow)
+                };
+                await _buildProgressProducer.PublishAsync(loadProgress, cancellationToken);
+                
+                buildLog.Content += $"  - {service.Name}: {service.ImageRef} (ports: {string.Join(", ", service.Ports)})\n";
                 await _dockerBuilder.LoadIntoKindAsync(service.ImageRef, cancellationToken);
                 buildLog.Content += $"    Loaded {service.ImageRef} into kind cluster\n";
+            }
+        }
+        else
+        {
+            // All services are image-only (external images like postgres, redis)
+            _logger.LogInformation(
+                "All {Count} services use external images (no custom builds required)",
+                services.Count);
+            
+            // Emit progress showing we're using external images
+            var externalProgress = new BuildProgress
+            {
+                RunId = runRequested.RunId,
+                Current = 1,
+                Total = 1,
+                ServiceName = $"Using {services.Count} external image(s) (postgres, redis, etc.)",
+                Timestamp = Timestamp.FromDateTime(DateTime.UtcNow)
+            };
+            await _buildProgressProducer.PublishAsync(externalProgress, cancellationToken);
+            
+            foreach (var service in services)
+            {
+                buildLog.Content += $"  - {service.Name}: {service.ImageRef} (external image, ports: {string.Join(", ", service.Ports)})\n";
             }
         }
 
@@ -271,6 +343,10 @@ public class BuilderWorker : BackgroundService
                 ImageRef = service.ImageRef
             };
             serviceInfo.Ports.AddRange(service.Ports);
+            foreach (var envKvp in service.Environment)
+            {
+                serviceInfo.Environment.Add(envKvp.Key, envKvp.Value);
+            }
             buildSucceeded.Services.Add(serviceInfo);
         }
 
@@ -287,13 +363,43 @@ public class BuilderWorker : BackgroundService
         {
             if (Directory.Exists(repoPath))
             {
-                await Task.Run(() => Directory.Delete(repoPath, recursive: true));
+                await Task.Run(() =>
+                {
+                    // Remove read-only attributes from all files (git creates read-only files in .git/objects)
+                    SetAttributesNormal(new DirectoryInfo(repoPath));
+                    Directory.Delete(repoPath, recursive: true);
+                });
                 _logger.LogInformation("Cleaned up repository at {Path}", repoPath);
             }
         }
         catch (Exception ex)
         {
-            _logger.LogWarning(ex, "Failed to cleanup repository at {Path}", repoPath);
+            _logger.LogWarning(ex, "Failed to cleanup repository at {Path} - will continue anyway", repoPath);
+        }
+    }
+
+    /// <summary>
+    /// Recursively remove read-only attributes from files and directories
+    /// </summary>
+    private void SetAttributesNormal(DirectoryInfo dir)
+    {
+        try
+        {
+            foreach (var subDir in dir.GetDirectories())
+            {
+                SetAttributesNormal(subDir);
+            }
+
+            foreach (var file in dir.GetFiles())
+            {
+                file.Attributes = FileAttributes.Normal;
+            }
+            
+            dir.Attributes = FileAttributes.Normal;
+        }
+        catch
+        {
+            // Ignore errors - best effort cleanup
         }
     }
 
@@ -317,6 +423,30 @@ public class BuilderWorker : BackgroundService
         catch (Exception ex)
         {
             _logger.LogWarning(ex, "Failed to write log entry for RunId={RunId}", runId);
+        }
+    }
+
+    /// <summary>
+    /// Emit build progress updates for better UX
+    /// </summary>
+    private async Task EmitBuildProgressAsync(string runId, string message, CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var progress = new BuildProgress
+            {
+                RunId = runId,
+                Current = 0,
+                Total = 0,
+                ServiceName = message,
+                Timestamp = Timestamp.FromDateTime(DateTime.UtcNow)
+            };
+            await _buildProgressProducer.PublishAsync(progress, cancellationToken);
+            _logger.LogInformation("📊 Progress: {Message}", message);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to emit build progress for RunId={RunId}", runId);
         }
     }
 }

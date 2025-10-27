@@ -11,17 +11,41 @@ namespace Shared.Streams;
 public static class StreamServiceExtensions
 {
     /// <summary>
-    /// Add Redis connection multiplexer
+    /// Add Redis connection multiplexer and cleanup service
     /// </summary>
+    /// <param name="flushOnStartup">If true, flushes all streams on startup to ensure clean state. Use only in ONE service (e.g., Gateway) to avoid race conditions.</param>
     public static IServiceCollection AddRedisStreams(
         this IServiceCollection services,
-        string connectionString)
+        string connectionString,
+        bool flushOnStartup = false)
     {
         services.AddSingleton<IConnectionMultiplexer>(sp =>
         {
-            var config = ConfigurationOptions.Parse(connectionString);
-            return ConnectionMultiplexer.Connect(config);
+            var logger = sp.GetRequiredService<ILogger<IConnectionMultiplexer>>();
+            try
+            {
+                var config = ConfigurationOptions.Parse(connectionString);
+                config.AbortOnConnectFail = false; // Don't throw on startup, retry in background
+                var connection = ConnectionMultiplexer.Connect(config);
+                logger.LogInformation("Redis connected to {ConnectionString}", connectionString);
+                return connection;
+            }
+            catch (Exception ex)
+            {
+                logger.LogError(ex, "Failed to connect to Redis at {ConnectionString}. Services may be degraded.", connectionString);
+                throw; // Rethrow to fail DI and make debugging obvious
+            }
         });
+
+        // Add automatic cleanup service
+        services.AddSingleton<StreamCleanupService>(sp =>
+        {
+            var redis = sp.GetRequiredService<IConnectionMultiplexer>();
+            var logger = sp.GetRequiredService<ILogger<StreamCleanupService>>();
+            var lifetime = sp.GetRequiredService<Microsoft.Extensions.Hosting.IHostApplicationLifetime>();
+            return new StreamCleanupService(redis, logger, lifetime, flushOnStartup);
+        });
+        services.AddHostedService(sp => sp.GetRequiredService<StreamCleanupService>());
 
         return services;
     }

@@ -29,10 +29,16 @@ resource "kind_cluster" "cluster" {
       role  = "control-plane"
       image = "kindest/node:v1.30.0"
 
-      # keep a host port handy for future preview traffic
+      # Port mappings for frontend (30080) and backend API (30081)
       extra_port_mappings {
         container_port = 30080
         host_port      = 30080
+        protocol       = "TCP"
+      }
+      
+      extra_port_mappings {
+        container_port = 30081
+        host_port      = 30081
         protocol       = "TCP"
       }
     }

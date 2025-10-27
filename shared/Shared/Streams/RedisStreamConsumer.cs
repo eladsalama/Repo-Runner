@@ -73,6 +73,12 @@ public class RedisStreamConsumer<T> : IStreamConsumer<T> where T : class, IMessa
                 _logger.LogInformation("Consumer {ConsumerName} stopped", _consumerName);
                 break;
             }
+            catch (RedisServerException ex) when (ex.Message.Contains("NOGROUP"))
+            {
+                _logger.LogWarning(ex, "Consumer group {GroupName} was deleted, recreating...", _groupName);
+                await EnsureConsumerGroupAsync(db);
+                await Task.Delay(1000, cancellationToken);
+            }
             catch (Exception ex)
             {
                 _logger.LogError(ex, "Error in consumer loop for {ConsumerName}", _consumerName);
@@ -161,6 +167,18 @@ public class RedisStreamConsumer<T> : IStreamConsumer<T> where T : class, IMessa
     {
         try
         {
+            // Check message type first - skip if not our type
+            var typeValue = entry.Values.FirstOrDefault(v => v.Name == "type").Value;
+            var expectedType = typeof(T).Name;
+            if (!typeValue.IsNullOrEmpty && (string)typeValue! != expectedType)
+            {
+                // Not our message type, acknowledge and skip
+                await db.StreamAcknowledgeAsync(_streamName, _groupName, entry.Id);
+                _logger.LogDebug("Skipping message {MessageId} of type {ActualType} (expected {ExpectedType})", 
+                    entry.Id, (string)typeValue!, expectedType);
+                return;
+            }
+            
             // Extract payload from stream entry
             var payloadValue = entry.Values.FirstOrDefault(v => v.Name == "payload").Value;
             if (payloadValue.IsNullOrEmpty)
@@ -170,9 +188,11 @@ public class RedisStreamConsumer<T> : IStreamConsumer<T> where T : class, IMessa
                 return;
             }
 
-            // Deserialize protobuf message
+            // Deserialize protobuf message from Base64-encoded payload
+            var base64Payload = (string)payloadValue!;
+            var payloadBytes = Convert.FromBase64String(base64Payload);
             var message = new T();
-            message.MergeFrom((byte[])payloadValue!);
+            message.MergeFrom(payloadBytes);
 
             _logger.LogDebug("Processing message {MessageId} of type {Type}", entry.Id, typeof(T).Name);
 

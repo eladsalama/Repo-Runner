@@ -10,93 +10,82 @@ using Google.Protobuf.WellKnownTypes;
 namespace Gateway.Services;
 
 /// <summary>
-/// MVP Skeleton implementation - simulates run lifecycle for testing
-/// In production, this will forward to Orchestrator
+/// Gateway RunService implementation - forwards requests to Orchestrator via events
 /// </summary>
 public class RunServiceImpl : RunService.RunServiceBase
 {
     private readonly ILogger<RunServiceImpl> _logger;
+    private readonly IStreamProducer<RunRequested> _runProducer;
     private readonly IStreamProducer<RunStopRequested> _stopProducer;
     private readonly ILogRepository _logRepository;
     private readonly IRunStatusCache _statusCache;
-    private static readonly ConcurrentDictionary<string, RunState> _runs = new();
-    private static readonly ConcurrentDictionary<string, CancellationTokenSource> _runCancellations = new();
 
     public RunServiceImpl(
         ILogger<RunServiceImpl> logger,
+        IStreamProducer<RunRequested> runProducer,
         IStreamProducer<RunStopRequested> stopProducer,
         ILogRepository logRepository,
         IRunStatusCache statusCache)
     {
         _logger = logger;
+        _runProducer = runProducer;
         _stopProducer = stopProducer;
         _logRepository = logRepository;
         _statusCache = statusCache;
     }
 
-    public override Task<StartRunResponse> StartRun(StartRunRequest request, ServerCallContext context)
+    public override async Task<StartRunResponse> StartRun(StartRunRequest request, ServerCallContext context)
     {
         _logger.LogInformation("StartRun called for repo: {RepoUrl}, mode: {Mode}", request.RepoUrl, request.Mode);
         
         var runId = Guid.NewGuid().ToString();
-        var state = new RunState
+        
+        // Convert RunMode from contracts to events (they're in different namespaces)
+        var eventMode = request.Mode == RepoRunner.Contracts.RunMode.Compose 
+            ? RepoRunner.Contracts.Events.RunMode.Compose 
+            : RepoRunner.Contracts.Events.RunMode.Dockerfile;
+
+        // Produce RunRequested event - Orchestrator will create the Run record
+        await _runProducer.PublishAsync(new RunRequested
         {
             RunId = runId,
             RepoUrl = request.RepoUrl,
             Branch = request.Branch,
-            Mode = request.Mode,
+            Mode = eventMode,
             ComposePath = request.ComposePath,
-            PrimaryService = request.PrimaryService,
-            Status = RunStatus.Queued,
-            CreatedAt = DateTime.UtcNow
-        };
+            PrimaryService = request.PrimaryService
+        });
 
-        _runs[runId] = state;
+        _logger.LogInformation("Produced RunRequested event for runId: {RunId}", runId);
 
-        // Start simulated status transitions
-        var cts = new CancellationTokenSource();
-        _runCancellations[runId] = cts;
-        _ = SimulateRunLifecycle(runId, cts.Token);
-
-        return Task.FromResult(new StartRunResponse
+        return new StartRunResponse
         {
             RunId = runId,
             Status = RunStatus.Queued,
             Mode = request.Mode,
             PrimaryService = request.PrimaryService
-        });
+        };
     }
 
     public override async Task<Empty> StopRun(StopRunRequest request, ServerCallContext context)
     {
         _logger.LogInformation("StopRun called for runId: {RunId}", request.RunId);
-        
-        if (_runs.TryGetValue(request.RunId, out var state))
+
+        // Produce RunStopRequested event for Runner to consume
+        try
         {
-            state.Status = RunStatus.Stopped;
-            state.EndedAt = DateTime.UtcNow;
-
-            if (_runCancellations.TryRemove(request.RunId, out var cts))
+            var stopEvent = new RunStopRequested
             {
-                cts.Cancel();
-            }
-
-            // Produce RunStopRequested event for Runner to consume
-            try
-            {
-                var stopEvent = new RunStopRequested
-                {
-                    RunId = request.RunId,
-                    Namespace = $"run-{request.RunId}",
-                    RequestedAt = Timestamp.FromDateTime(DateTime.UtcNow)
-                };
-                await _stopProducer.PublishAsync(stopEvent, context.CancellationToken);
-                _logger.LogInformation("Produced RunStopRequested event for runId: {RunId}", request.RunId);
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Failed to produce RunStopRequested event for runId: {RunId}", request.RunId);
-            }
+                RunId = request.RunId,
+                Namespace = $"run-{request.RunId}",
+                RequestedAt = Timestamp.FromDateTime(DateTime.UtcNow)
+            };
+            await _stopProducer.PublishAsync(stopEvent, context.CancellationToken);
+            _logger.LogInformation("Produced RunStopRequested event for runId: {RunId}", request.RunId);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to produce RunStopRequested event for runId: {RunId}", request.RunId);
         }
 
         return new Empty();
@@ -104,47 +93,37 @@ public class RunServiceImpl : RunService.RunServiceBase
 
     public override async Task<RunStatusResponse> GetRunStatus(GetRunStatusRequest request, ServerCallContext context)
     {
-        _logger.LogInformation("GetRunStatus called for runId: {RunId}", request.RunId);
-        
-        // Try to get status from Redis cache first
-        try
+        // Try Redis cache first (fast path)
+        if (_statusCache != null)
         {
-            var cachedStatus = await _statusCache.GetAsync(request.RunId, context.CancellationToken);
-            if (cachedStatus != null)
+            try
             {
-                _logger.LogDebug("Cache hit for runId: {RunId}", request.RunId);
-                return new RunStatusResponse
+                var cachedStatus = await _statusCache.GetAsync(request.RunId, context?.CancellationToken ?? CancellationToken.None);
+                if (cachedStatus != null)
                 {
-                    RunId = cachedStatus.RunId,
-                    Status = System.Enum.Parse<RepoRunner.Contracts.RunStatus>(cachedStatus.Status, ignoreCase: true),
-                    PreviewUrl = cachedStatus.PreviewUrl ?? "",
-                    StartedAt = cachedStatus.StartedAt.HasValue ? Timestamp.FromDateTime(cachedStatus.StartedAt.Value) : null,
-                    EndedAt = cachedStatus.EndedAt.HasValue ? Timestamp.FromDateTime(cachedStatus.EndedAt.Value) : null,
-                    ErrorMessage = cachedStatus.ErrorMessage ?? "",
-                    Mode = System.Enum.Parse<RepoRunner.Contracts.RunMode>(cachedStatus.Mode, ignoreCase: true),
-                    PrimaryService = cachedStatus.PrimaryService ?? ""
-                };
+                    _logger.LogDebug("Cache hit for runId: {RunId}", request.RunId);
+                    return new RunStatusResponse
+                    {
+                        RunId = cachedStatus.RunId,
+                        Status = System.Enum.Parse<RepoRunner.Contracts.RunStatus>(cachedStatus.Status, ignoreCase: true),
+                        PreviewUrl = cachedStatus.PreviewUrl ?? "",
+                        StartedAt = cachedStatus.StartedAt.HasValue ? Timestamp.FromDateTime(cachedStatus.StartedAt.Value) : null,
+                        EndedAt = cachedStatus.EndedAt.HasValue ? Timestamp.FromDateTime(cachedStatus.EndedAt.Value) : null,
+                        ErrorMessage = cachedStatus.ErrorMessage ?? "",
+                        Mode = System.Enum.Parse<RepoRunner.Contracts.RunMode>(cachedStatus.Mode, ignoreCase: true),
+                        PrimaryService = cachedStatus.PrimaryService ?? "",
+                        BuildProgress = cachedStatus.BuildProgress ?? ""
+                    };
+                }
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Failed to get status from cache for runId: {RunId}, cache service may not be initialized", request.RunId);
             }
         }
-        catch (Exception ex)
+        else
         {
-            _logger.LogWarning(ex, "Failed to get status from cache for runId: {RunId}, falling back to in-memory", request.RunId);
-        }
-
-        // Fallback to in-memory store (for MVP/testing)
-        if (_runs.TryGetValue(request.RunId, out var state))
-        {
-            return new RunStatusResponse
-            {
-                RunId = state.RunId,
-                Status = state.Status,
-                PreviewUrl = state.PreviewUrl ?? "",
-                StartedAt = state.StartedAt.HasValue ? Timestamp.FromDateTime(state.StartedAt.Value) : null,
-                EndedAt = state.EndedAt.HasValue ? Timestamp.FromDateTime(state.EndedAt.Value) : null,
-                ErrorMessage = state.ErrorMessage ?? "",
-                Mode = state.Mode,
-                PrimaryService = state.PrimaryService ?? ""
-            };
+            _logger.LogWarning("Cache service is null for runId: {RunId}, this indicates DI construction failure", request.RunId);
         }
 
         throw new RpcException(new Status(StatusCode.NotFound, $"Run {request.RunId} not found"));
@@ -190,74 +169,4 @@ public class RunServiceImpl : RunService.RunServiceBase
             throw new RpcException(new Status(StatusCode.Internal, $"Error streaming logs: {ex.Message}"));
         }
     }
-
-    /// <summary>
-    /// Simulates run lifecycle: Queued → Building (2s) → Running (3s) → Succeeded
-    /// </summary>
-    private async Task SimulateRunLifecycle(string runId, CancellationToken cancellationToken)
-    {
-        try
-        {
-            if (!_runs.TryGetValue(runId, out var state)) return;
-
-            // Queued → Building
-            await Task.Delay(TimeSpan.FromSeconds(2), cancellationToken);
-            if (cancellationToken.IsCancellationRequested) return;
-            
-            state.Status = RunStatus.Building;
-            _logger.LogInformation("Run {RunId} transitioned to Building", runId);
-
-            // Building → Running
-            await Task.Delay(TimeSpan.FromSeconds(3), cancellationToken);
-            if (cancellationToken.IsCancellationRequested) return;
-            
-            state.Status = RunStatus.Running;
-            state.StartedAt = DateTime.UtcNow;
-            state.PreviewUrl = $"http://localhost:8080/run/{runId}";
-            _logger.LogInformation("Run {RunId} transitioned to Running", runId);
-
-            // Running → Succeeded
-            await Task.Delay(TimeSpan.FromSeconds(3), cancellationToken);
-            if (cancellationToken.IsCancellationRequested) return;
-            
-            state.Status = RunStatus.Succeeded;
-            state.EndedAt = DateTime.UtcNow;
-            _logger.LogInformation("Run {RunId} transitioned to Succeeded", runId);
-
-            _runCancellations.TryRemove(runId, out _);
-        }
-        catch (OperationCanceledException)
-        {
-            _logger.LogInformation("Run {RunId} simulation cancelled", runId);
-        }
-        catch (Exception ex)
-        {
-            _logger.LogError(ex, "Error simulating run {RunId}", runId);
-            if (_runs.TryGetValue(runId, out var state))
-            {
-                state.Status = RunStatus.Failed;
-                state.ErrorMessage = ex.Message;
-                state.EndedAt = DateTime.UtcNow;
-            }
-        }
-    }
-}
-
-/// <summary>
-/// Holds state for a run (MVP skeleton - in production this will be in Mongo)
-/// </summary>
-internal class RunState
-{
-    public string RunId { get; set; } = "";
-    public string RepoUrl { get; set; } = "";
-    public string Branch { get; set; } = "";
-    public RepoRunner.Contracts.RunMode Mode { get; set; }
-    public string ComposePath { get; set; } = "";
-    public string? PrimaryService { get; set; }
-    public RunStatus Status { get; set; }
-    public DateTime CreatedAt { get; set; }
-    public DateTime? StartedAt { get; set; }
-    public DateTime? EndedAt { get; set; }
-    public string? PreviewUrl { get; set; }
-    public string? ErrorMessage { get; set; }
 }
