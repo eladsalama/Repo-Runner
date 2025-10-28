@@ -208,9 +208,15 @@ public class DockerBuilder : IDockerBuilder
             {
                 // Handle build context path - use absolute path for Docker
                 var buildContextRelative = service.BuildContext ?? ".";
+                // Remove trailing slashes to avoid path issues
+                buildContextRelative = buildContextRelative.TrimEnd('/', '\\');
+                
                 var contextPath = buildContextRelative == "." 
                     ? Path.GetFullPath(repoPath) 
                     : Path.GetFullPath(Path.Combine(repoPath, buildContextRelative));
+                
+                // Ensure no trailing slashes in the final path
+                contextPath = contextPath.TrimEnd('\\');
                     
                 var dockerfileArg = !string.IsNullOrEmpty(service.Dockerfile) 
                     ? $"--file \"{Path.Combine(contextPath, service.Dockerfile)}\"" 

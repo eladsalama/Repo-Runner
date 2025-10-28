@@ -828,7 +828,7 @@ function pollStatus(statusEl: HTMLElement, statusDot: HTMLElement, statusText: H
         statusEl.style.color = STATUS_TEXT_COLOR_FAILED;
         statusText.textContent = 'Failed ✗';
         clearInterval(statusPollInterval!);
-        resetButtons();
+        resetButtons(); // Don't hide Run ID on failure
       }
 
     } catch (error) {
@@ -1070,7 +1070,6 @@ function resetButtons(): void {
   const previewBtn = document.getElementById('reporunner-preview-btn');
   const logsContainer = document.getElementById('reporunner-logs-container');
   const errorEl = document.getElementById('reporunner-error');
-  const runIdEl = document.getElementById('reporunner-run-id');
   
   // Show start button, hide stop button
   if (startBtn) {
@@ -1092,17 +1091,13 @@ function resetButtons(): void {
     errorEl.textContent = '';
   }
   
-  // Hide run ID
-  if (runIdEl) {
-    runIdEl.style.display = 'none';
-  }
+  // Never hide Run ID - keep it visible for debugging/reference
   
   // Hide logs when run completes
   if (logsContainer) {
     logsContainer.style.display = 'none';
   }
   
-  currentRunId = null;
   currentLogService = null;
 }
 

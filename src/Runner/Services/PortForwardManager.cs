@@ -223,6 +223,16 @@ public class PortForwardManager : IDisposable
 
     private async Task<int> FindAvailablePortAsync(int preferredPort, CancellationToken cancellationToken)
     {
+        // Skip privileged ports (<1024) on Windows - they require admin access
+        // If preferredPort is privileged, use 8000+ offset instead
+        if (preferredPort < 1024)
+        {
+            preferredPort = 8000 + preferredPort; // e.g., 80 -> 8080, 443 -> 8443
+            _logger.LogInformation(
+                "Original port was privileged, using {Port} instead",
+                preferredPort);
+        }
+        
         // Always try preferred port first - this ensures web:3100 gets 3100, api:3000 gets 3000
         if (await IsPortAvailableAsync(preferredPort))
         {
