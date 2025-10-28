@@ -1,3 +1,4 @@
+using System.Text;
 using YamlDotNet.Serialization;
 using YamlDotNet.Serialization.NamingConventions;
 
@@ -44,6 +45,13 @@ public class DockerComposeParser : IDockerComposeParser
                     continue;
                 }
 
+                // Skip services with profiles (they need explicit activation with --profile)
+                if (serviceConfig.TryGetValue("profiles", out var profilesObj))
+                {
+                    _logger.LogInformation("Skipping service {Service} - has profiles defined (not in default profile)", serviceName);
+                    continue;
+                }
+
                 var composeService = new ComposeService { Name = serviceName };
 
                 // Check for image
@@ -82,12 +90,59 @@ public class DockerComposeParser : IDockerComposeParser
                         var portStr = portObj?.ToString();
                         if (string.IsNullOrEmpty(portStr)) continue;
 
-                        // Handle formats like "8080:80" or "80"
-                        var parts = portStr.Split(':');
+                        // Handle formats like "8080:80", "80", or "${VAR:-3000}:${VAR:-3000}"
+                        // Split carefully - don't split on : inside ${}
+                        var parts = SplitPortMapping(portStr);
                         var portPart = parts.Length > 1 ? parts[1] : parts[0];
                         
                         // Remove /tcp or /udp suffix
                         portPart = portPart.Split('/')[0];
+
+                        // Handle environment variable format: ${VAR:-default} or ${VAR}
+                        if (portPart.StartsWith("${") && portPart.EndsWith("}"))
+                        {
+                            var envVarContent = portPart.Substring(2, portPart.Length - 3); // Remove ${ and }
+                            
+                            // Check if it has a default value (:-syntax)
+                            if (envVarContent.Contains(":-"))
+                            {
+                                var defaultValue = envVarContent.Split(":-")[1];
+                                if (int.TryParse(defaultValue, out var defaultPort))
+                                {
+                                    composeService.Ports.Add(defaultPort);
+                                    _logger.LogInformation(
+                                        "Resolved port environment variable in {Service}: {PortStr} -> {Port}",
+                                        serviceName, portStr, defaultPort);
+                                    continue;
+                                }
+                            }
+                            
+                            // Try to resolve from actual environment variables
+                            var varName = envVarContent.Split(':')[0];
+                            if (composeService.Environment.TryGetValue(varName, out var envValue))
+                            {
+                                // Recursively resolve if the value is also an env var
+                                if (envValue.StartsWith("${") && envValue.Contains(":-"))
+                                {
+                                    var innerDefault = envValue.Split(":-")[1].TrimEnd('}');
+                                    if (int.TryParse(innerDefault, out var resolvedPort))
+                                    {
+                                        composeService.Ports.Add(resolvedPort);
+                                        continue;
+                                    }
+                                }
+                                else if (int.TryParse(envValue, out var envPort))
+                                {
+                                    composeService.Ports.Add(envPort);
+                                    continue;
+                                }
+                            }
+                            
+                            _logger.LogWarning(
+                                "Could not resolve port environment variable in {Service}: {PortStr}, skipping",
+                                serviceName, portStr);
+                            continue;
+                        }
 
                         if (int.TryParse(portPart, out var port))
                         {
@@ -170,5 +225,50 @@ public class DockerComposeParser : IDockerComposeParser
             _logger.LogError(ex, "Failed to parse docker-compose file {Path}", composePath);
             throw;
         }
+    }
+
+    /// <summary>
+    /// Splits port mapping string like "8080:80" or "${APP_PORT:-3000}:${APP_PORT:-3000}"
+    /// Handles environment variables correctly without splitting on : inside ${}
+    /// </summary>
+    private static string[] SplitPortMapping(string portMapping)
+    {
+        var parts = new List<string>();
+        var currentPart = new StringBuilder();
+        var insideBraces = 0;
+
+        for (int i = 0; i < portMapping.Length; i++)
+        {
+            var ch = portMapping[i];
+
+            if (ch == '$' && i + 1 < portMapping.Length && portMapping[i + 1] == '{')
+            {
+                insideBraces++;
+                currentPart.Append(ch);
+            }
+            else if (ch == '}' && insideBraces > 0)
+            {
+                insideBraces--;
+                currentPart.Append(ch);
+            }
+            else if (ch == ':' && insideBraces == 0)
+            {
+                // This is a port separator, not part of an env var
+                parts.Add(currentPart.ToString());
+                currentPart.Clear();
+            }
+            else
+            {
+                currentPart.Append(ch);
+            }
+        }
+
+        // Add the last part
+        if (currentPart.Length > 0)
+        {
+            parts.Add(currentPart.ToString());
+        }
+
+        return parts.ToArray();
     }
 }

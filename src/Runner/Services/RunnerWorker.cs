@@ -16,6 +16,7 @@ public class RunnerWorker : BackgroundService
     private readonly IKubernetesDeployer _deployer;
     private readonly IRunRepository _runRepository;
     private readonly IPodLogTailer _podLogTailer;
+    private readonly PortForwardManager _portForwardManager;
 
     public RunnerWorker(
         ILogger<RunnerWorker> logger,
@@ -26,7 +27,8 @@ public class RunnerWorker : BackgroundService
         IKubernetesResourceGenerator resourceGenerator,
         IKubernetesDeployer deployer,
         IRunRepository runRepository,
-        IPodLogTailer podLogTailer)
+        IPodLogTailer podLogTailer,
+        PortForwardManager portForwardManager)
     {
         _logger = logger;
         _consumer = consumer;
@@ -37,6 +39,7 @@ public class RunnerWorker : BackgroundService
         _deployer = deployer;
         _runRepository = runRepository;
         _podLogTailer = podLogTailer;
+        _portForwardManager = portForwardManager;
     }
 
     protected override async Task ExecuteAsync(CancellationToken stoppingToken)
@@ -62,14 +65,30 @@ public class RunnerWorker : BackgroundService
                         _logger.LogInformation("Deleting old namespace: {Namespace}", ns);
                         await _deployer.DeleteNamespaceAsync(ns, stoppingToken);
                     }
+
+                    // Also cleanup ALL port-forwards (only 1 run at a time, so all old port-forwards must go)
+                    _logger.LogInformation("Cleaning up all old port-forwards");
+                    await _portForwardManager.CleanupAllPortForwardsAsync();
                 }
                 catch (Exception cleanupEx)
                 {
-                    _logger.LogWarning(cleanupEx, "Failed to cleanup old namespaces, continuing anyway");
+                    _logger.LogWarning(cleanupEx, "Failed to cleanup old namespaces/port-forwards, continuing anyway");
                 }
 
                 // Get run record
-                var run = await _runRepository.GetByIdAsync(buildSucceeded.RunId, stoppingToken);
+                Run? run = null;
+                try
+                {
+                    run = await _runRepository.GetByIdAsync(buildSucceeded.RunId, stoppingToken);
+                }
+                catch (Exception dbEx)
+                {
+                    _logger.LogError(dbEx, 
+                        "Failed to retrieve run {RunId} from database - data may be corrupted or schema mismatch. Skipping this run.",
+                        buildSucceeded.RunId);
+                    return true; // ACK to skip this corrupted message
+                }
+                
                 if (run == null)
                 {
                     _logger.LogWarning("Run not found: {RunId} - will retry (race condition with Orchestrator)", buildSucceeded.RunId);

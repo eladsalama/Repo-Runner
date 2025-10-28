@@ -197,27 +197,57 @@ async function detectRepoFiles(): Promise<RepoDetection> {
         const response = await fetch(rawUrl);
         const composeText = await response.text();
         
-        // Simple YAML parsing to extract top-level service names
+        // Simple YAML parsing to extract top-level service names (excluding profiled services)
         const servicesMatch = composeText.match(/^services:\s*$/m);
         if (servicesMatch) {
           const servicesSection = composeText.substring(servicesMatch.index! + servicesMatch[0].length);
           const serviceNames: string[] = [];
+          const servicesToSkip: Set<string> = new Set();
           const lines = servicesSection.split('\n');
           
+          // First pass: find all services with profiles
+          let currentService: string | null = null;
           for (const line of lines) {
-            // Match service names (non-indented or 2-space indented lines that end with :)
-            const match = line.match(/^  ([a-z0-9_-]+):\s*$/i);
-            if (match) {
-              serviceNames.push(match[1]);
-            } else if (line.match(/^[a-z]/i)) {
-              // Hit next top-level section, stop
+            // Hit next top-level section (starts with non-whitespace letter), stop parsing
+            if (line.match(/^[a-z]/i)) {
               break;
+            }
+            
+            // Match service names (2-space indented lines that end with :)
+            const serviceMatch = line.match(/^  ([a-z0-9_-]+):\s*$/i);
+            if (serviceMatch) {
+              currentService = serviceMatch[1];
+              continue;
+            }
+            
+            // Check if current service has "profiles:" field
+            if (currentService && line.match(/^\s{4,}profiles:\s*$/i)) {
+              servicesToSkip.add(currentService);
+              console.log('[RepoRunner] Skipping service with profiles:', currentService);
+              currentService = null;
+            }
+          }
+          
+          // Second pass: collect all service names (excluding those with profiles)
+          for (const line of lines) {
+            // Hit next top-level section, stop
+            if (line.match(/^[a-z]/i)) {
+              break;
+            }
+            
+            // Match service names
+            const serviceMatch = line.match(/^  ([a-z0-9_-]+):\s*$/i);
+            if (serviceMatch) {
+              const serviceName = serviceMatch[1];
+              if (!servicesToSkip.has(serviceName)) {
+                serviceNames.push(serviceName);
+              }
             }
           }
           
           if (serviceNames.length > 0) {
             result.services = serviceNames;
-            console.log('[RepoRunner] Detected services:', serviceNames);
+            console.log('[RepoRunner] Detected services (excluding profiled):', serviceNames);
           }
         }
       } catch (err) {
@@ -655,9 +685,20 @@ async function startRun(detection: RepoDetection, repoUrl: string | null): Promi
 
     statusText.textContent = 'Starting run...';
 
+    console.log('[RepoRunner] Sending start request:', {
+      repoUrl,
+      branch: 'main',
+      mode: detection.mode,
+      composePath: detection.composePath,
+      primaryService: primaryService
+    });
+
     const response = await fetch(`${GATEWAY_URL}/api/runs/start`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 
+        'Content-Type': 'application/json',
+        'Accept': 'application/json'
+      },
       body: JSON.stringify({
         repoUrl: repoUrl,
         branch: 'main',
@@ -667,11 +708,16 @@ async function startRun(detection: RepoDetection, repoUrl: string | null): Promi
       })
     });
 
+    console.log('[RepoRunner] Response status:', response.status);
+
     if (!response.ok) {
-      throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      const errorText = await response.text();
+      console.error('[RepoRunner] Error response:', errorText);
+      throw new Error(`HTTP ${response.status}: ${errorText}`);
     }
 
     const result = await response.json();
+    console.log('[RepoRunner] Run started:', result);
     currentRunId = result.runId;
 
     // Show stop button, hide start button

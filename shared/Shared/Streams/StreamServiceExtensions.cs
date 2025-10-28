@@ -47,6 +47,9 @@ public static class StreamServiceExtensions
         });
         services.AddHostedService(sp => sp.GetRequiredService<StreamCleanupService>());
 
+        // Add stream cleanup utility
+        services.AddSingleton<IStreamCleanup, RedisStreamCleanup>();
+
         return services;
     }
 

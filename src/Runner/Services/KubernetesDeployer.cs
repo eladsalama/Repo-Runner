@@ -153,11 +153,23 @@ public class KubernetesDeployer : IKubernetesDeployer
     public Dictionary<string, string> GetAllServiceUrls(KubernetesResources resources)
     {
         // Create port-forwards for all services (use first port from each service)
+        // SKIP infrastructure ports (6379=Redis, 27017=MongoDB) to avoid conflicts
         try
         {
+            var infraPorts = new HashSet<int> { 6379, 27017 };
+            
             var servicePorts = resources.ServicePorts
                 .Where(kvp => kvp.Value.Any())
+                .Where(kvp => !infraPorts.Contains(kvp.Value.First())) // Skip infrastructure ports
                 .ToDictionary(kvp => kvp.Key, kvp => kvp.Value.First());
+            
+            if (servicePorts.Count < resources.ServicePorts.Count)
+            {
+                var skipped = resources.ServicePorts.Keys.Except(servicePorts.Keys);
+                _logger.LogInformation(
+                    "Skipped port-forwarding for {Services} (conflicts with infrastructure ports)",
+                    string.Join(", ", skipped));
+            }
             
             var urls = _portForwardManager.CreatePortForwardsForNamespaceAsync(
                 resources.NamespaceName,

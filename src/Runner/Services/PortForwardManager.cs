@@ -32,13 +32,25 @@ public class PortForwardManager : IDisposable
     {
         var key = $"{namespaceName}/{serviceName}";
         
-        // Check if port-forward already exists
+        // Check if port-forward already exists and process is still alive
         if (_portForwards.TryGetValue(key, out var existing))
         {
-            _logger.LogInformation(
-                "Port-forward already exists for {Service} in {Namespace} on port {Port}",
-                serviceName, namespaceName, existing.LocalPort);
-            return existing.Url;
+            // Verify the process is still running
+            if (existing.Process != null && !existing.Process.HasExited)
+            {
+                _logger.LogInformation(
+                    "Port-forward already exists for {Service} in {Namespace} on port {Port}",
+                    serviceName, namespaceName, existing.LocalPort);
+                return existing.Url;
+            }
+            else
+            {
+                // Process died, remove from dictionary and recreate
+                _logger.LogWarning(
+                    "Port-forward process for {Service} in {Namespace} has died, recreating...",
+                    serviceName, namespaceName);
+                _portForwards.TryRemove(key, out _);
+            }
         }
 
         // Find an available local port
@@ -233,45 +245,127 @@ public class PortForwardManager : IDisposable
                 preferredPort);
         }
         
-        // Always try preferred port first - this ensures web:3100 gets 3100, api:3000 gets 3000
+        // Check if port is available
         if (await IsPortAvailableAsync(preferredPort))
         {
-            _logger.LogInformation("Using preferred port {Port}", preferredPort);
+            _logger.LogInformation("Using port {Port}", preferredPort);
             return preferredPort;
         }
 
-        _logger.LogWarning("Preferred port {Port} is busy, finding alternative...", preferredPort);
-
-        // Try nearby ports first (±10 from preferred)
-        for (int offset = 1; offset <= 10; offset++)
+        // Port is busy - kill whatever is using it (likely old port-forward from previous run)
+        _logger.LogWarning("Port {Port} is busy, killing process using it...", preferredPort);
+        await KillProcessUsingPortAsync(preferredPort);
+        
+        // Wait a moment for the port to be released
+        await Task.Delay(500, cancellationToken);
+        
+        // Verify port is now available
+        if (await IsPortAvailableAsync(preferredPort))
         {
-            int lowerPort = preferredPort - offset;
-            if (lowerPort >= 3000 && await IsPortAvailableAsync(lowerPort))
-            {
-                _logger.LogInformation("Using alternative port {Port} (preferred {PreferredPort} was busy)", lowerPort, preferredPort);
-                return lowerPort;
-            }
-
-            int upperPort = preferredPort + offset;
-            if (upperPort < 10000 && await IsPortAvailableAsync(upperPort))
-            {
-                _logger.LogInformation("Using alternative port {Port} (preferred {PreferredPort} was busy)", upperPort, preferredPort);
-                return upperPort;
-            }
+            _logger.LogInformation("Successfully freed port {Port}", preferredPort);
+            return preferredPort;
         }
 
-        // Fallback: scan entire range
-        for (int port = 3000; port < 10000; port++)
+        throw new InvalidOperationException($"Failed to free port {preferredPort} - it may be used by a system process");
+    }
+
+    private async Task KillProcessUsingPortAsync(int port)
+    {
+        try
         {
-            if (port == preferredPort) continue; // Already tried
-            if (await IsPortAvailableAsync(port))
+            // On Windows, use netstat to find the process ID using the port
+            var startInfo = new ProcessStartInfo
             {
-                _logger.LogInformation("Using fallback port {Port} (preferred {PreferredPort} was busy)", port, preferredPort);
-                return port;
+                FileName = "netstat",
+                Arguments = "-ano",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                CreateNoWindow = true
+            };
+
+            using var process = Process.Start(startInfo);
+            if (process == null) return;
+
+            var output = await process.StandardOutput.ReadToEndAsync();
+            await process.WaitForExitAsync();
+
+            // Parse netstat output to find PID
+            // Format: TCP    0.0.0.0:3000    0.0.0.0:0    LISTENING    12345
+            var lines = output.Split('\n');
+            foreach (var line in lines)
+            {
+                if (line.Contains($":{port}") && line.Contains("LISTENING"))
+                {
+                    var parts = line.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries);
+                    if (parts.Length > 0 && int.TryParse(parts[^1], out var pid))
+                    {
+                        _logger.LogInformation("Killing process {PID} using port {Port}", pid, port);
+                        try
+                        {
+                            var processToKill = Process.GetProcessById(pid);
+                            processToKill.Kill(entireProcessTree: true);
+                            _logger.LogInformation("Successfully killed process {PID}", pid);
+                        }
+                        catch (Exception ex)
+                        {
+                            _logger.LogWarning(ex, "Failed to kill process {PID}", pid);
+                        }
+                    }
+                }
             }
         }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to find/kill process using port {Port}", port);
+        }
+    }
 
-        throw new InvalidOperationException($"No available ports found (preferred: {preferredPort})");
+    /// <summary>
+    /// Kills user run port-forwards (excluding infrastructure ports 6379/27017) before starting a new run.
+    /// Since we only support 1 run at a time, this ensures ports are available.
+    /// </summary>
+    public async Task CleanupAllPortForwardsAsync()
+    {
+        try
+        {
+            // Kill kubectl port-forwards EXCEPT infrastructure (6379=Redis, 27017=MongoDB)
+            var script = @"
+                Get-Process kubectl -ErrorAction SilentlyContinue | ForEach-Object {
+                    $cmdLine = (Get-WmiObject Win32_Process -Filter ""ProcessId=$($_.Id)"").CommandLine
+                    if ($cmdLine -and $cmdLine -match 'port-forward' -and 
+                        $cmdLine -notmatch ':6379' -and $cmdLine -notmatch ':27017') {
+                        Stop-Process -Id $_.Id -Force -ErrorAction SilentlyContinue
+                    }
+                }
+            ";
+
+            var startInfo = new ProcessStartInfo
+            {
+                FileName = "powershell.exe",
+                Arguments = $"-NoProfile -Command \"{script}\"",
+                UseShellExecute = false,
+                RedirectStandardOutput = true,
+                RedirectStandardError = true,
+                CreateNoWindow = true
+            };
+
+            using var process = Process.Start(startInfo);
+            if (process != null)
+            {
+                await process.WaitForExitAsync();
+                _logger.LogInformation("Cleaned up user run port-forwards (preserved infrastructure 6379/27017)");
+            }
+
+            // Clear the in-memory cache
+            _portForwards.Clear();
+
+            // Wait a moment for ports to be released
+            await Task.Delay(1000);
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "Failed to cleanup port-forwards");
+        }
     }
 
     private Task<bool> IsPortAvailableAsync(int port)

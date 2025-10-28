@@ -9,25 +9,20 @@ $env:KUBECONFIG = Join-Path $repoRoot "infra\terraform\kubeconfig"
 Write-Host "`nStarting RepoRunner Services..." -ForegroundColor Cyan
 
 # Clean up old jobs
-Get-Job | Where-Object { $_.Name -in @('Gateway','Orchestrator','Builder','Runner') } | Stop-Job -PassThru | Remove-Job -ErrorAction SilentlyContinue
+Get-Job | Where-Object { $_.Name -in @('Gateway','Orchestrator','Builder','Runner','PortForwardMonitor') } | Stop-Job -PassThru | Remove-Job -ErrorAction SilentlyContinue
 Get-Job | Where-Object { $_.Name -like 'PortForward*' } | Stop-Job -PassThru | Remove-Job -ErrorAction SilentlyContinue
 
-# Start port forwarding
-Write-Host "[PORT-FORWARD] Starting..." -ForegroundColor Yellow
-Start-Job -Name "PortForwardMongo" -ScriptBlock {
-    param($kubeconfig)
+# Start port forward monitor (auto-restarts if they die)
+Write-Host "[PORT-FORWARD] Starting monitor..." -ForegroundColor Yellow
+$watchScript = Join-Path $PSScriptRoot "watch-port-forwards.ps1"
+Start-Job -Name "PortForwardMonitor" -ScriptBlock {
+    param($script, $kubeconfig)
     $env:KUBECONFIG = $kubeconfig
-    kubectl port-forward -n infra svc/mongodb 27017:27017 2>&1
-} -ArgumentList $env:KUBECONFIG | Out-Null
+    & $script
+} -ArgumentList $watchScript, $env:KUBECONFIG | Out-Null
 
-Start-Job -Name "PortForwardRedis" -ScriptBlock {
-    param($kubeconfig)
-    $env:KUBECONFIG = $kubeconfig
-    kubectl port-forward -n infra svc/redis-master 6379:6379 2>&1
-} -ArgumentList $env:KUBECONFIG | Out-Null
-
-Start-Sleep -Seconds 3
-Write-Host "[PORT-FORWARD] Active" -ForegroundColor Green
+Start-Sleep -Seconds 5
+Write-Host "[PORT-FORWARD] Monitor active (auto-restart enabled)" -ForegroundColor Green
 
 # Service definitions
 $services = @(

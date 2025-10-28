@@ -19,24 +19,41 @@ public class RunServiceImpl : RunService.RunServiceBase
     private readonly IStreamProducer<RunStopRequested> _stopProducer;
     private readonly ILogRepository _logRepository;
     private readonly IRunStatusCache _statusCache;
+    private readonly IStreamCleanup _streamCleanup;
 
     public RunServiceImpl(
         ILogger<RunServiceImpl> logger,
         IStreamProducer<RunRequested> runProducer,
         IStreamProducer<RunStopRequested> stopProducer,
         ILogRepository logRepository,
-        IRunStatusCache statusCache)
+        IRunStatusCache statusCache,
+        IStreamCleanup streamCleanup)
     {
         _logger = logger;
         _runProducer = runProducer;
         _stopProducer = stopProducer;
         _logRepository = logRepository;
         _statusCache = statusCache;
+        _streamCleanup = streamCleanup;
     }
 
     public override async Task<StartRunResponse> StartRun(StartRunRequest request, ServerCallContext context)
     {
         _logger.LogInformation("StartRun called for repo: {RepoUrl}, mode: {Mode}", request.RepoUrl, request.Mode);
+        
+        // Clean up any stuck pending messages before starting new run
+        try
+        {
+            _logger.LogInformation("Cleaning up stuck pending messages before new run...");
+            await _streamCleanup.AcknowledgeAllPendingAsync(
+                StreamConfig.Streams.RepoRuns, 
+                $"{StreamConfig.Groups.Runner}:buildsucceeded");
+            _logger.LogInformation("✅ Cleanup complete, starting new run");
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "Failed to cleanup pending messages, continuing anyway");
+        }
         
         var runId = Guid.NewGuid().ToString();
         
