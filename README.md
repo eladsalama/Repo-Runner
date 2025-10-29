@@ -1,22 +1,58 @@
-# RepoRunner
+# RepoRunner — Local Kubernetes Orchestration Platform
 
-**Run any GitHub repo locally in isolated Kubernetes sandboxes—just click a button.**
+> **A browser extension for one-click deployment of any GitHub repository into isolated Kubernetes sandboxes**
 
-One-click deployment of any public GitHub repo (Dockerfile or docker-compose.yml) into isolated K8s namespaces on your PC. Real-time build logs, automatic preview URLs, zero cloud costs.
+[![.NET](https://img.shields.io/badge/.NET-9.0-512BD4?logo=dotnet)](https://dotnet.microsoft.com/)
+[![TypeScript](https://img.shields.io/badge/TypeScript-5.x-blue?logo=typescript)](https://www.typescriptlang.org/)
+[![Kubernetes](https://img.shields.io/badge/Kubernetes-kind-326CE5?logo=kubernetes)](https://kind.sigs.k8s.io/)
+[![Terraform](https://img.shields.io/badge/Terraform-IaC-7B42BC?logo=terraform)](https://www.terraform.io/)
+[![MongoDB](https://img.shields.io/badge/MongoDB-6.0-47A248?logo=mongodb)](https://www.mongodb.com/)
+[![Redis](https://img.shields.io/badge/Redis-Stack-DC382D?logo=redis)](https://redis.io/)
+[![Docker](https://img.shields.io/badge/Docker-Containerized-2496ED?logo=docker)](https://www.docker.com/)
 
-## Features
+Built by [Elad Salama](https://www.linkedin.com/in/eladsalama)
 
-- **One-Click Deploy**: Browser extension detects Dockerfiles, builds & runs automatically
-- **Isolated Sandboxes**: Each run gets its own Kubernetes namespace with resource limits
-- **Real-Time Logs**: Live build and runtime logs streamed to browser
-- **Auto Port-Forwarding**: Deployed apps automatically accessible on localhost
-- **Multi-Service Support**: Full docker-compose.yml support with automatic service detection
-- **Auto-Migrations**: Prisma databases automatically initialized on deployment
-- **Auto-Cleanup**: TTL-based namespace deletion (2h default)
+---
 
-## Stack
+## Project Overview
 
-**.NET 9.0 Microservices** (Gateway, Orchestrator, Builder, Runner) • **Redis Streams** (events) • **MongoDB** (logs/metadata) • **kind** (local K8s) • **Browser Extension** (TypeScript)
+RepoRunner enables users to one-click deploy any public GitHub repo (with a Dockerfile or docker-compose.yml) to local Kubernetes.
+
+<details open>
+  <summary><b>Architecture Overview</b> (click to collapse)</summary>
+
+  **Event-Driven Microservices Architecture:**
+  
+  - **Browser Extension (TypeScript)** → Detects repos, triggers deployments, streams logs
+  - **Gateway (.NET 9)** → HTTP/gRPC API, request validation, authentication
+  - **Orchestrator (.NET 9)** → Workflow coordination, state management, event orchestration
+  - **Builder (.NET 9)** → Git cloning, Docker image builds, kind cluster loading
+  - **Runner (.NET 9)** → Kubernetes deployments, namespace management, port-forwarding
+  - **Redis Streams** → Event bus for async communication and task queues
+  - **MongoDB** → Persistent storage for run metadata, logs, and artifacts
+  - **Kubernetes (kind)** → Local container orchestration with namespace isolation
+  - **Terraform** → Infrastructure as Code for reproducible local environment setup
+
+  <p align="center">
+    <i>Distributed system with gRPC communication, Redis-backed event streaming, and Kubernetes orchestration</i>
+  </p>
+</details>
+
+---
+
+## Technical Highlights
+
+### **Zero-Cost Local Development**
+- **No cloud dependencies** — Everything runs on Docker Desktop with kind (Kubernetes in Docker)
+- **Infrastructure as Code** — HashiCorp Terraform provisions entire stack (kind cluster, Helm releases, networking) in 2-3 minutes
+- **Self-healing infrastructure** — Automated port-forward monitoring with health checks and auto-restart on failure
+- **Resource efficient** — 6GB RAM requirement, BuildKit-powered intelligent layer caching, multi-stage builds
+
+### **Enterprise Patterns**
+- **Event-driven architecture** — Redis Streams as message broker for reliable asynchronous communication and task queuing
+- **Service mesh ready** — Protocol Buffers (protobuf) with gRPC for internal service-to-service communication, HTTP/REST gateway for external APIs
+- **Observability-first design** — Structured logging (Serilog), RESTful health checks, distributed tracing hooks, service discovery
+- **Fault tolerance** — Exponential backoff retry mechanisms, idempotency tokens, circuit breaker pattern, graceful degradation strategies
 
 ---
 
@@ -31,7 +67,7 @@ choco install docker-desktop kubernetes-cli kubernetes-helm terraform kind git -
 
 **Docker Desktop:** Allocate **6GB+ RAM** (Settings → Resources)
 
-📖 Full install guide: [`infra/PREREQUISITES.md`](infra/PREREQUISITES.md)
+Full install guide: [`infra/PREREQUISITES.md`](infra/PREREQUISITES.md)
 
 ---
 
@@ -58,14 +94,14 @@ cd ..  # Back to repo root
 ```
 
 **What this does:**
-- Checks if services are already running
-- Starts any stopped services as **background jobs**
-- Services keep running in background (no terminal windows)
-- Auto port-forwards MongoDB (27017) & Redis (6379)
+- Checks if services are already running (idempotent execution)
+- Starts any stopped services as **PowerShell background jobs** (IHostedService workers)
+- Services run persistently in background without blocking terminal sessions
+- Automated port-forwarding with health monitoring for MongoDB (27017) and Redis (6379)
 
-⏱️ First start takes ~10s for initialization. Subsequent runs detect already-running services instantly.
+First start takes approximately 10 seconds for .NET runtime initialization and service discovery. Subsequent executions detect already-running processes instantly via job status checks.
 
-💡 **Tip:** Services run once and stay up. No need to restart unless you update code.
+**Note:** Microservices run once and persist. Restart only required after code changes or configuration updates.
 
 ---
 
@@ -92,15 +128,15 @@ npm run build
 4. Watch progress: `QUEUED → BUILDING → DEPLOYING → SUCCEEDED`
 5. Click **"Open Preview"** button to access your deployed app (automatic port-forwarding!)
 
-**docker-compose repos:** Extension auto-detects services and you can toggle between Compose/Dockerfile modes
+**docker-compose repos:** Extension auto-detects multi-service configurations and provides runtime toggle between Compose/Dockerfile deployment modes
 
 **What happens automatically:**
-- Docker images built and loaded into kind cluster
-- Kubernetes namespace created with all services
-- Environment variables parsed from docker-compose.yml
-- Prisma migrations executed (if detected)
-- Port-forwards created to localhost (prefers native ports: web→3100, api→3000)
-- Preview URL points to your localhost
+- Docker images built with BuildKit and loaded directly into kind cluster node (no registry push required)
+- Kubernetes namespace provisioned with resource quotas, network policies, and RBAC
+- Environment variables and secrets parsed from docker-compose.yml and injected as ConfigMaps
+- Database schema migrations executed automatically (Prisma, Entity Framework, Alembic detection)
+- kubectl port-forwards established to localhost with intelligent port selection (preserves native ports: frontend→3000, backend→8080)
+- Preview URL resolved to localhost with automatic service discovery
 
 ---
 
@@ -121,32 +157,33 @@ cd infra
 
 ---
 
+## Monitoring and Observability
 
-## Monitoring
-
-**Service Logs:** Use the monitoring script to watch all services:
+**Service Logs:** Use the monitoring script to aggregate logs from all microservices:
 ```powershell
 .\scripts\monitor-logs.ps1
 ```
 
-**Run Status:**
+**Run Status and Kubernetes Resources:**
 ```powershell
-kubectl get namespaces | Select-String "run-"  # List all runs
-kubectl get pods -n run-<run-id>               # Check run pods
-kubectl logs -n run-<run-id> <pod-name>        # View pod logs
+kubectl get namespaces | Select-String "run-"  # List all active run namespaces
+kubectl get pods -n run-<run-id>               # Check pod status and readiness
+kubectl logs -n run-<run-id> <pod-name>        # View container logs
+kubectl describe pod -n run-<run-id> <pod-name> # Debug pod events and conditions
 ```
 
-**Active Port-Forwards:**
+**Active Port-Forward Processes:**
 ```powershell
 Get-Process | Where-Object { $_.ProcessName -eq 'kubectl' -and $_.CommandLine -like '*port-forward*' }
 ```
 
-**Database:**
+**MongoDB Database Inspection:**
 ```powershell
 kubectl port-forward -n infra svc/mongodb 27018:27017
 mongosh mongodb://localhost:27018
 use reporunner
 db.runs.find().pretty()
+db.runs.aggregate([{ $group: { _id: "$status", count: { $sum: 1 } } }])  # Status breakdown
 ```
 
 ---
@@ -155,42 +192,61 @@ db.runs.find().pretty()
 
 | Issue | Solution |
 |-------|----------|
-| **Extension button missing** | Refresh page (Ctrl+Shift+R). Check F12 Console for errors. Verify repo has `Dockerfile` or `docker-compose.yml` in root. |
-| **"Failed to start" error** | Ensure Gateway is running (`.\scripts\start-background.ps1`). Check http://localhost:5247 is accessible. |
-| **Build fails: "git not found"** | `choco install git -y` then restart services |
-| **Build fails: "docker not found"** | Verify Docker Desktop is running: `docker ps` |
-| **Pods stuck in "Pending"** | Increase Docker Desktop RAM to 6GB+ (Settings → Resources → Memory) |
-| **"Port already in use"** | Another app is using the port. Runner will try nearby ports automatically (3100→3101→3102...) |
-| **Preview URL won't open** | Check port-forward is active: `Get-Process kubectl`. Restart run if needed. |
+| **Extension button missing** | Refresh page (Ctrl+Shift+R). Inspect browser console (F12) for JavaScript errors. Verify repository root contains `Dockerfile` or `docker-compose.yml`. Check extension is loaded in `chrome://extensions/`. |
+| **"Failed to start" error** | Ensure Gateway microservice is running (`.\scripts\start-background.ps1`). Verify health endpoint: `http://localhost:5247/health`. Check PowerShell background jobs: `Get-Job`. |
+| **Build fails: "git not found"** | Install Git via Chocolatey: `choco install git -y`, then restart all services to refresh PATH environment variable. |
+| **Build fails: "docker not found"** | Verify Docker Desktop is running: `docker ps`. Ensure Docker CLI is accessible: `docker --version`. Check Docker daemon status in system tray. |
+| **Pods stuck in "Pending"** | Increase Docker Desktop resource allocation to 6GB+ RAM (Settings → Resources → Memory). Check node capacity: `kubectl describe nodes`. |
+| **Status stuck at "Building"** | Infrastructure port-forwards (MongoDB/Redis) may have terminated. Execute `.\scripts\ensure-port-forwards.ps1` to restart. Port-forward monitor now auto-restarts failed connections. |
+| **"Run not found" errors in logs** | MongoDB or Redis port-forward conflict with application services on ports 27017/6379. Fixed in v1.1+ with infrastructure port filtering logic. Update to latest version. |
+| **Preview URL won't open** | Verify port-forward process is active: `Get-Process kubectl`. Application may be using reserved infrastructure ports (27017, 6379) — now automatically excluded from forwarding. |
+| **Services fail to build after code changes** | Stop all services: `.\scripts\stop-services.ps1`. Rebuild affected service: `dotnet build -c Release`. Restart: `.\scripts\start-background.ps1`. |
+| **Redis connection timeout** | Check Redis pod status: `kubectl get pods -n infra`. Verify port-forward: `Get-Job -Name "PortForwardRedis"`. Restart infrastructure: `.\infra\bootstrap.ps1 apply`. |
 
 ---
 
 ## Documentation
 
-- **[AUDIT-REPORT.md](AUDIT-REPORT.md)** - Comprehensive validation report (all systems verified ✅)
-- **[PORT-MAPPING.md](PORT-MAPPING.md)** - Complete port allocation reference
-- **[QUICKREF.md](QUICKREF.md)** - Command cheat sheet
-- **[docs/Progress.md](docs/Progress.md)** - Milestone tracking & roadmap
-- **[docs/Plan.md](docs/Plan.md)** - Architecture deep-dive
-- **[infra/PREREQUISITES.md](infra/PREREQUISITES.md)** - Detailed tool installation
+- **[AUDIT-REPORT.md](AUDIT-REPORT.md)** - Comprehensive system validation report with end-to-end test results
+- **[PORT-MAPPING.md](PORT-MAPPING.md)** - Complete port allocation reference for all services and infrastructure
+- **[QUICKREF.md](QUICKREF.md)** - Command reference and common operations cheat sheet
+- **[infra/PREREQUISITES.md](infra/PREREQUISITES.md)** - Detailed tool installation instructions for Windows, macOS, Linux
 
 **Quick Validation:**
 ```powershell
-.\scripts\quick-check.ps1  # Run before every demo
+.\scripts\quick-check.ps1  # Pre-demo health check for all services and infrastructure
 ```
 
 ---
 
-## What's Next
+## Key Learning Outcomes
 
-- **Milestone 8**: RAG Indexer (embed README + Dockerfiles)
-- **Milestone 9**: LLM Chat (Q&A about running repos)
-- **Milestone 10-11**: Security hardening + demo video
+This project demonstrates:
 
-See [Progress.md](docs/Progress.md) for full roadmap.
+### **Distributed Systems & Backend Engineering**
+- Event-driven microservices with Redis Streams message broker and consumer groups
+- gRPC with Protocol Buffers for type-safe inter-service communication
+- .NET 9 backend with dependency injection, async/await patterns, and IHostedService workers
+- MongoDB document storage with aggregation pipelines
+- Idempotency tokens and exactly-once processing patterns
+- Structured logging with Serilog and distributed tracing with correlation IDs
 
----
+### **Infrastructure as Code & Kubernetes**
+- HashiCorp Terraform for declarative infrastructure provisioning
+- kind (Kubernetes in Docker) cluster with custom networking
+- Helm chart deployments for stateful services (MongoDB ReplicaSet, Redis StatefulSet)
+- Dynamic namespace provisioning with resource quotas and network policies
+- ConfigMap/Secret management with automatic injection
+- Automated port-forwarding and service discovery
 
-## License
+### **DevOps & Containerization**
+- Multi-stage Docker builds with BuildKit caching and layer optimization
+- Docker Compose orchestration with profile filtering
+- Local container registry with kind cluster image loading
+- Port conflict detection and automated resolution
 
-MIT • Portfolio project showcasing local-first K8s orchestration and event-driven architecture.
+### **Browser Extension Development**
+- TypeScript Chrome extension with Manifest V3
+- Content scripts for GitHub repo detection and DOM manipulation
+- Real-time status polling with exponential backoff
+- YAML parsing for docker-compose.yml service discovery
